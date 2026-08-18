@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Required by CloverAccount.getAccount() on older Clover devices -->
-    <uses-permission
-        android:name="android.permission.GET_ACCOUNTS"
-        android:maxSdkVersion="27" />
+    <!-- Required by CloverAccount.getAccount() -->
+    <uses-permission android:name="android.permission.GET_ACCOUNTS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="true"
@@ -32,6 +32,10 @@
                 <action android:name="com.clover.intent.action.ORDER_CREATED" />
             </intent-filter>
         </receiver>
+
+        <service
+            android:name=".service.PromoMonitorService"
+            android:exported="false" />
     </application>
 
 </manifest>

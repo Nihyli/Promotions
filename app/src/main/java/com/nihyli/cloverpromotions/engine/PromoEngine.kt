@@ -37,6 +37,10 @@ object PromoEngine {
         val connector = OrderConnector(context, account, null)
         try {
             connector.connect()
+            if (!waitUntilConnected(connector)) {
+                Log.e(TAG, "OrderConnector did not connect; skipping $orderId")
+                return@withLock
+            }
             val order = connector.getOrder(orderId)
             if (order == null) {
                 Log.w(TAG, "Order $orderId not found")
@@ -46,6 +50,13 @@ object PromoEngine {
             val lineItems = order.lineItems.orEmpty()
                 .filter { it.id != null }
             val rules = PromoDatabase.get(context).rules().activeRules()
+            Log.i(
+                TAG,
+                "Recompute $orderId: ${lineItems.size} line(s), ${rules.size} active rule(s). " +
+                    lineItems.joinToString { li ->
+                        "${li.name} id=${li.item?.id} qty=${unitCount(li)} price=${li.price}"
+                    },
+            )
 
             val desired = computeDesiredDiscounts(rules, lineItems)
             val desiredByLine = desired.groupBy { it.lineItemId }
@@ -81,10 +92,10 @@ object PromoEngine {
     }
 
     /**
-     * For each rule, group qualifying line items into bundles of
-     * [PromoRule.requiredQty] and put the whole bundle's savings on the last
-     * line item of the bundle, so 2 x $3.00 with a $5.00 bundle price shows a
-     * single -$1.00 discount.
+     * For each rule, expand line items by Register quantity (Clover often
+     * combines 2 scans into one line with unitQty=2000) and group units into
+     * bundles of [PromoRule.requiredQty]. Savings for a bundle land on the last
+     * line item that contributed a unit, so 2 x $3.00 for $5.00 shows -$1.00.
      */
     private fun computeDesiredDiscounts(
         rules: List<PromoRule>,
@@ -94,20 +105,31 @@ object PromoEngine {
         for (rule in rules) {
             if (rule.requiredQty < 2) continue
             val matching = lineItems
-                .filter { it.item?.id == rule.itemId && it.price != null }
-                .sortedBy { it.id } // stable bundle assignment across recomputes
+                .filter { matches(it, rule) && it.price != null }
+                .sortedBy { it.id }
 
-            val bundleCount = matching.size / rule.requiredQty
+            val units = matching.flatMap { li ->
+                List(unitCount(li)) { UnitSlot(li.id, li.price ?: 0L) }
+            }
+            val bundleCount = units.size / rule.requiredQty
+            Log.i(
+                TAG,
+                "Rule '${rule.name}' matched ${units.size} unit(s) across ${matching.size} line(s) → $bundleCount bundle(s)",
+            )
+            val savingsByLine = linkedMapOf<String, Long>()
             for (bundle in 0 until bundleCount) {
-                val bundleItems = matching.subList(
+                val bundleUnits = units.subList(
                     bundle * rule.requiredQty,
                     (bundle + 1) * rule.requiredQty,
                 )
-                val bundleTotal = bundleItems.sumOf { it.price ?: 0L }
-                val savings = bundleTotal - rule.bundlePriceCents
+                val savings = bundleUnits.sumOf { it.priceCents } - rule.bundlePriceCents
                 if (savings <= 0) continue
+                val lineId = bundleUnits.last().lineItemId
+                savingsByLine[lineId] = (savingsByLine[lineId] ?: 0L) + savings
+            }
+            for ((lineId, savings) in savingsByLine) {
                 desired += DesiredDiscount(
-                    lineItemId = bundleItems.last().id,
+                    lineItemId = lineId,
                     name = PROMO_PREFIX + rule.name,
                     amountCents = -savings,
                 )
@@ -115,4 +137,33 @@ object PromoEngine {
         }
         return desired
     }
+
+    private fun matches(lineItem: com.clover.sdk.v3.order.LineItem, rule: PromoRule): Boolean {
+        val itemId = lineItem.item?.id
+        if (!itemId.isNullOrBlank() && itemId == rule.itemId) return true
+        val name = lineItem.name ?: return false
+        return name.equals(rule.itemName, ignoreCase = true)
+    }
+
+    /** Clover stores quantity in thousandths (2 items → 2000). */
+    private fun unitCount(lineItem: com.clover.sdk.v3.order.LineItem): Int {
+        val qty = lineItem.unitQty ?: return 1
+        if (qty <= 0L) return 1
+        if (qty < 1000L) return qty.toInt()
+        return (qty / 1000L).toInt().coerceAtLeast(1)
+    }
+
+    private fun waitUntilConnected(connector: OrderConnector, timeoutMs: Long = 5_000): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (!connector.isConnected && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(50)
+            } catch (_: InterruptedException) {
+                return connector.isConnected
+            }
+        }
+        return connector.isConnected
+    }
+
+    private data class UnitSlot(val lineItemId: String, val priceCents: Long)
 }

@@ -63,6 +63,13 @@ fun RulesScreen(viewModel: MainViewModel) {
             }
         } else {
             LazyColumn(Modifier.padding(padding)) {
+                item {
+                    Text(
+                        "Keep this app open (or leave its notification) so Register can apply promo prices.",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
                 items(rules, key = { it.id }) { rule ->
                     ListItem(
                         headlineContent = { Text(rule.name) },
