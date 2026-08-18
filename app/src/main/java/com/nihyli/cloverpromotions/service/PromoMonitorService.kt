@@ -76,20 +76,27 @@ class PromoMonitorService : Service() {
             addAction(Intents.ACTION_ORDER_CREATED)
         }
         registerReceiver(receiver, filter)
-
-        val account = CloverAccount.getAccount(this)
-        if (account != null) {
-            orderConnector = OrderConnector(this, account, null).also { connector ->
-                connector.connect()
-                connector.addOnOrderChangedListener(orderListener)
-            }
-        } else {
-            Log.w(TAG, "No Clover account; order listener not attached")
-        }
+        attachOrderListener()
         Log.i(TAG, "Promo monitor started")
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        attachOrderListener()
+        return START_STICKY
+    }
+
+    private fun attachOrderListener() {
+        if (orderConnector != null) return
+        val account = CloverAccount.getAccount(this)
+        if (account == null) {
+            Log.w(TAG, "No Clover account yet; will retry when started again")
+            return
+        }
+        orderConnector = OrderConnector(this, account, null).also { connector ->
+            connector.connect()
+            connector.addOnOrderChangedListener(orderListener)
+        }
+    }
 
     override fun onDestroy() {
         try {
