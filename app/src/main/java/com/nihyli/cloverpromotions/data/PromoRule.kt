@@ -27,4 +27,32 @@ data class PromoRule(
     val requiredQty: Int,
     val bundlePriceCents: Long,
     val active: Boolean = true,
-)
+) {
+    /**
+     * Short group name for titles and hints (e.g. "Candy", "Red Bull").
+     * Ignores a stored label that already looks like a full “3 x … for $…” title.
+     */
+    fun groupDisplayName(): String {
+        val fromItems = items.firstOrNull()?.name.orEmpty()
+        val trimmed = label.trim()
+        if (trimmed.isEmpty() || looksLikeFullPromoTitle(trimmed)) {
+            return fromItems.ifBlank { trimmed }
+        }
+        return trimmed
+    }
+
+    /** Title shown in the list and on receipts, e.g. "3 x Candy for $3.00". */
+    fun displayTitle(): String {
+        val dollars = java.lang.String.format(java.util.Locale.US, "$%.2f", bundlePriceCents / 100.0)
+        return "$requiredQty x ${groupDisplayName()} for $dollars"
+    }
+}
+
+/** True if [text] already includes qty/price wording, so wrapping it again would duplicate. */
+fun looksLikeFullPromoTitle(text: String): Boolean {
+    val value = text.trim()
+    if (value.contains(" for $", ignoreCase = true)) return true
+    if (value.contains(" for ", ignoreCase = true) && value.firstOrNull()?.isDigit() == true) return true
+    if (Regex("""^\d+\s*x\s""", RegexOption.IGNORE_CASE).containsMatchIn(value)) return true
+    return false
+}

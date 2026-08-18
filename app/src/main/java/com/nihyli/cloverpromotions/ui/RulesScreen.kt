@@ -91,14 +91,8 @@ fun RulesScreen(viewModel: MainViewModel) {
                 }
                 items(rules, key = { it.id }) { rule ->
                     ListItem(
-                        headlineContent = { Text(rule.name) },
-                        supportingContent = {
-                            Text(
-                                "${rule.requiredQty} x ${rule.label} for " +
-                                    centsToDollars(rule.bundlePriceCents) +
-                                    "\n" + itemsSummary(rule.items),
-                            )
-                        },
+                        headlineContent = { Text(rule.displayTitle()) },
+                        supportingContent = { Text(itemsSummary(rule.items)) },
                         leadingContent = {
                             Switch(
                                 checked = rule.active,
@@ -154,7 +148,7 @@ private fun RuleEditorDialog(
             existing?.items?.forEach { add(PickerItem(it.id, it.name, 0L)) }
         }
     }
-    var labelText by remember { mutableStateOf(existing?.label ?: "") }
+    var labelText by remember { mutableStateOf(existing?.groupDisplayName().orEmpty()) }
     var qtyText by remember { mutableStateOf(existing?.requiredQty?.toString() ?: "2") }
     var priceText by remember {
         mutableStateOf(
@@ -210,7 +204,7 @@ private fun RuleEditorDialog(
                 OutlinedTextField(
                     value = labelText,
                     onValueChange = { labelText = it },
-                    label = { Text("Promotion name (e.g. Red Bull)") },
+                    label = { Text("Group name (e.g. Red Bull)") },
                     placeholder = {
                         Text(selectedItems.firstOrNull()?.name ?: "Red Bull")
                     },

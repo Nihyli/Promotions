@@ -161,7 +161,7 @@ object PromoCalculator {
         if (leftover.isEmpty()) return null
 
         val unitPrice = units.last().priceCents
-        val label = familyRules.minByOrNull { it.id }?.label.orEmpty()
+        val label = familyRules.minByOrNull { it.id }?.groupDisplayName().orEmpty()
         val maxAdd = familyRules.maxOf { it.requiredQty }
         for (add in 1..maxAdd) {
             val extras = List(add) { UnitSlot(units.last().lineItemId, unitPrice) }
@@ -242,7 +242,7 @@ object PromoCalculator {
             val amount = minOf(perUnit * count, priceByLine.getValue(lineId))
             DesiredDiscount(
                 lineItemId = lineId,
-                name = PROMO_PREFIX + rule.name,
+                name = PROMO_PREFIX + rule.displayTitle(),
                 amountCents = -amount,
             )
         }

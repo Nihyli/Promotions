@@ -281,6 +281,28 @@ class PromoCalculatorTest {
         assertEquals("Add 1 more Red Bull to get $1.00 off", nudges.single().message)
     }
 
+    @Test
+    fun pollutedStoredNameDoesNotAppearOnTheDiscount() {
+        val candy = PromoRule(
+            id = 10,
+            name = "3 x 3 for 3 Candy for $3.00",
+            label = "3 for 3 Candy",
+            items = listOf(PromoItemRef("item-candy", "Candy")),
+            requiredQty = 3,
+            bundlePriceCents = 300,
+        )
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(candy),
+            listOf(CartLine("a", "item-candy", "Candy", 150, 3)),
+        )
+        assertEquals(listOf("PROMO: 3 x Candy for $3.00"), discounts.map { it.name }.distinct())
+        val nudges = PromoCalculator.desiredNudges(
+            listOf(candy),
+            listOf(CartLine("a", "item-candy", "Candy", 150, 1)),
+        )
+        assertEquals("Add 2 more Candy to get $1.50 off", nudges.single().message)
+    }
+
     // ---- nudges / notes ----
 
     @Test
