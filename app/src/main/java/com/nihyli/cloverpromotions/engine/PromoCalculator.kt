@@ -130,7 +130,7 @@ object PromoCalculator {
             claimed += matching.map { it.lineItemId }
             val units = matching.flatMap { line ->
                 List(line.quantity) { UnitSlot(line.lineItemId, line.unitPriceCents) }
-            }
+            }.sortedByDescending { it.priceCents }
             block(familyRules, matching, units)
         }
     }
@@ -143,21 +143,19 @@ object PromoCalculator {
         val plan = planPacks(familyRules, units)
         if (plan.packs.isEmpty()) return emptyList()
         val discounts = mutableListOf<DesiredDiscount>()
-        var idx = 0
-        for (rule in plan.packs) {
-            val slice = units.subList(idx, idx + rule.requiredQty).toList()
-            idx += rule.requiredQty
-            val savings = slice.sumOf { it.priceCents } - rule.bundlePriceCents
+        for (pack in plan.packs) {
+            val slice = pack.unitIndices.map { units[it] }
+            val savings = slice.sumOf { it.priceCents } - pack.rule.bundlePriceCents
             if (savings <= 0) continue
-            discounts += evenDiscounts(rule, slice, savings)
+            discounts += evenDiscounts(pack.rule, slice, savings)
         }
         return discounts
     }
 
     private fun closestNudge(familyRules: List<PromoRule>, units: List<UnitSlot>): PromoNudge? {
         val current = planPacks(familyRules, units)
-        val packedQty = current.packs.sumOf { it.requiredQty }
-        val leftover = units.drop(packedQty)
+        val packedIdx = current.packs.flatMap { it.unitIndices }.toHashSet()
+        val leftover = units.filterIndexed { index, _ -> index !in packedIdx }
         if (leftover.isEmpty()) return null
 
         val unitPrice = units.last().priceCents
@@ -193,8 +191,7 @@ object PromoCalculator {
                 if (k < qty) continue
                 val candidate = cost[k - qty] + rule.bundlePriceCents
                 val better = candidate < cost[k] ||
-                    (candidate == cost[k] && used[k] == null) ||
-                    (candidate == cost[k] && (used[k]?.requiredQty ?: 0) < qty)
+                    (candidate == cost[k] && used[k] != null && (used[k]?.requiredQty ?: 0) < qty)
                 if (better) {
                     cost[k] = candidate
                     prev[k] = k - qty
@@ -203,18 +200,17 @@ object PromoCalculator {
             }
         }
 
-        val packs = mutableListOf<PromoRule>()
+        val packs = mutableListOf<PlannedPack>()
         var k = n
         while (k > 0) {
             val rule = used[k]
             if (rule != null) {
-                packs += rule
+                packs += PlannedPack(rule, (k - rule.requiredQty) until k)
                 k = prev[k]
             } else {
                 k -= 1
             }
         }
-        packs.sortByDescending { it.requiredQty }
         return PackPlan(packs, cost[n])
     }
 
@@ -231,15 +227,29 @@ object PromoCalculator {
         bundled: List<UnitSlot>,
         totalSavings: Long,
     ): List<DesiredDiscount> {
+        if (totalSavings <= 0L) return emptyList()
         val perUnit = totalSavings / bundled.size
-        if (perUnit <= 0L) return emptyList()
 
         val countByLine = bundled.groupingBy { it.lineItemId }.eachCount()
         val priceByLine = bundled.groupingBy { it.lineItemId }
             .fold(0L) { acc, unit -> acc + unit.priceCents }
 
-        return countByLine.map { (lineId, count) ->
-            val amount = minOf(perUnit * count, priceByLine.getValue(lineId))
+        val amounts = linkedMapOf<String, Long>()
+        for ((lineId, count) in countByLine) {
+            amounts[lineId] = minOf(perUnit * count, priceByLine.getValue(lineId))
+        }
+        var leftover = totalSavings - amounts.values.sum()
+        for (lineId in amounts.keys) {
+            if (leftover <= 0L) break
+            val room = priceByLine.getValue(lineId) - amounts.getValue(lineId)
+            if (room <= 0L) continue
+            val extra = minOf(room, leftover)
+            amounts[lineId] = amounts.getValue(lineId) + extra
+            leftover -= extra
+        }
+
+        return amounts.mapNotNull { (lineId, amount) ->
+            if (amount <= 0L) return@mapNotNull null
             DesiredDiscount(
                 lineItemId = lineId,
                 name = PROMO_PREFIX + rule.displayTitle(),
@@ -259,7 +269,9 @@ object PromoCalculator {
                 )
             }
 
-    private data class PackPlan(val packs: List<PromoRule>, val totalCost: Long)
+    private data class PlannedPack(val rule: PromoRule, val unitIndices: IntRange)
+
+    private data class PackPlan(val packs: List<PlannedPack>, val totalCost: Long)
 
     private data class UnitSlot(val lineItemId: String, val priceCents: Long)
 }

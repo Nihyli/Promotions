@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -40,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -54,6 +56,7 @@ fun RulesScreen(viewModel: MainViewModel) {
     val rules by viewModel.rules.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf<PromoRule?>(null) }
     var showEditor by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf<PromoRule?>(null) }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Promotions") }) },
@@ -105,7 +108,7 @@ fun RulesScreen(viewModel: MainViewModel) {
                                     editing = rule
                                     showEditor = true
                                 }) { Text("Edit") }
-                                TextButton(onClick = { viewModel.delete(rule) }) { Text("Delete") }
+                                TextButton(onClick = { confirmDelete = rule }) { Text("Delete") }
                             }
                         },
                     )
@@ -124,6 +127,23 @@ fun RulesScreen(viewModel: MainViewModel) {
             onSave = { rule ->
                 viewModel.save(rule)
                 showEditor = false
+            },
+        )
+    }
+
+    confirmDelete?.let { rule ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete promotion?") },
+            text = { Text("\u201c${rule.displayTitle()}\u201d will stop applying in Register immediately.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.delete(rule)
+                    confirmDelete = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = null }) { Text("Cancel") }
             },
         )
     }
@@ -216,6 +236,7 @@ private fun RuleEditorDialog(
                     onValueChange = { qtyText = it },
                     label = { Text("Quantity required (min 2)") },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
@@ -223,6 +244,7 @@ private fun RuleEditorDialog(
                     onValueChange = { priceText = it },
                     label = { Text("Bundle price, e.g. 5.00") },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 if (autoName.isNotEmpty()) {

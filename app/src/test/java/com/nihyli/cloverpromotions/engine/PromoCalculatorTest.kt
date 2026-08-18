@@ -524,6 +524,56 @@ class PromoCalculatorTest {
         assertTrue(PromoCalculator.desiredNotes(inactive, listOf(line(qty = 8))).isEmpty())
     }
 
+    @Test
+    fun oddDivisionSavingsStillRingExactBundlePrice() {
+        val rule = PromoRule(
+            id = 98, name = "3 x Candy for $4.00", label = "Candy",
+            items = listOf(PromoItemRef("item-candy", "Candy")),
+            requiredQty = 3, bundlePriceCents = 400,
+        )
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(rule),
+            listOf(CartLine("li1", "item-candy", "Candy", unitPriceCents = 149, quantity = 3)),
+        )
+        assertEquals(-47L, discounts.sumOf { it.amountCents })
+    }
+
+    @Test
+    fun mixedPricePackCoversExpensiveUnitsAndStillDiscounts() {
+        val rule = PromoRule(
+            id = 97, name = "2 x Drink for $3.00", label = "Drink",
+            items = listOf(PromoItemRef("cheap", "Cheap"), PromoItemRef("dear", "Dear")),
+            requiredQty = 2, bundlePriceCents = 300,
+        )
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(rule),
+            listOf(
+                CartLine("a", "cheap", "Cheap", unitPriceCents = 100, quantity = 1),
+                CartLine("b", "cheap", "Cheap", unitPriceCents = 100, quantity = 1),
+                CartLine("c", "dear", "Dear", unitPriceCents = 500, quantity = 1),
+            ),
+        )
+        assertEquals(-300L, discounts.sumOf { it.amountCents })
+        assertTrue(discounts.none { it.amountCents < -500L })
+    }
+
+    @Test
+    fun capOverflowRedistributesToLinesWithRoom() {
+        val rule = PromoRule(
+            id = 96, name = "2 x Mix for $4.00", label = "Mix",
+            items = listOf(PromoItemRef("big", "Big"), PromoItemRef("small", "Small")),
+            requiredQty = 2, bundlePriceCents = 400,
+        )
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(rule),
+            listOf(
+                CartLine("x", "big", "Big", unitPriceCents = 600, quantity = 1),
+                CartLine("y", "small", "Small", unitPriceCents = 50, quantity = 1),
+            ),
+        )
+        assertEquals(-250L, discounts.sumOf { it.amountCents })
+    }
+
     private fun line(id: String = "li-try5", qty: Int) = CartLine(
         lineItemId = id,
         itemId = try5,

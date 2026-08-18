@@ -1,5 +1,6 @@
 package com.nihyli.cloverpromotions.service
 
+import android.accounts.Account
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -37,6 +38,7 @@ class PromoMonitorService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val receiver = PromoBroadcastReceiver()
     private var orderConnector: OrderConnector? = null
+    private var boundAccount: Account? = null
 
     private val orderListener = object : OrderV31Connector.OnOrderUpdateListener2 {
         override fun onOrderUpdated(orderId: String, selfChange: Boolean) {
@@ -86,25 +88,34 @@ class PromoMonitorService : Service() {
     }
 
     private fun attachOrderListener() {
-        if (orderConnector != null) return
         val account = CloverAccount.getAccount(this)
         if (account == null) {
             Log.w(TAG, "No Clover account yet; will retry when started again")
+            detachOrderListener()
             return
         }
+        if (orderConnector != null && account == boundAccount) return
+        // First attach, or the merchant changed: rebuild the connector.
+        detachOrderListener()
+        boundAccount = account
         orderConnector = OrderConnector(this, account, null).also { connector ->
             connector.connect()
             connector.addOnOrderChangedListener(orderListener)
         }
     }
 
+    private fun detachOrderListener() {
+        orderConnector?.removeOnOrderChangedListener(orderListener)
+        orderConnector?.disconnect()
+        orderConnector = null
+        boundAccount = null
+    }
+
     override fun onDestroy() {
         try {
             unregisterReceiver(receiver)
         } catch (_: Exception) {}
-        orderConnector?.removeOnOrderChangedListener(orderListener)
-        orderConnector?.disconnect()
-        orderConnector = null
+        detachOrderListener()
         scope.cancel()
         super.onDestroy()
     }

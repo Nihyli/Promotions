@@ -78,7 +78,7 @@ android {
 }
 
 dependencies {
-    implementation("com.clover.sdk:clover-android-sdk:latest.release")
+    implementation("com.clover.sdk:clover-android-sdk:334")
 
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.material3:material3")
