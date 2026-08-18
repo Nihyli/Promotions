@@ -60,7 +60,7 @@ class PromoMonitorService : Service() {
             discountIds: MutableList<String>,
         ) {}
         override fun onLineItemExchanged(orderId: String, oldLineItemId: String, newLineItemId: String) = recompute(orderId)
-        override fun onPaymentProcessed(orderId: String, paymentId: String) {}
+        override fun onPaymentProcessed(orderId: String, paymentId: String) = recompute(orderId)
         override fun onRefundProcessed(orderId: String, refundId: String) {}
         override fun onCreditProcessed(orderId: String, creditId: String) {}
     }

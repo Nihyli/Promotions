@@ -17,6 +17,11 @@ data class DesiredDiscount(
     val amountCents: Long,
 )
 
+data class PromoNudge(
+    val lineItemIds: Set<String>,
+    val message: String,
+)
+
 /**
  * Picks promotion discounts for a cart.
  *
@@ -27,6 +32,7 @@ data class DesiredDiscount(
 object PromoCalculator {
     const val PROMO_PREFIX = "PROMO: "
     private const val INF = Long.MAX_VALUE / 4
+    private val hintNote = Regex("""^Add \d+ more .+ to get \$[\d.]+ off$""")
 
     fun desiredDiscounts(rules: List<PromoRule>, lines: List<CartLine>): List<DesiredDiscount> {
         val usableRules = rules.filter { it.active && it.requiredQty >= 2 }
@@ -43,6 +49,32 @@ object PromoCalculator {
             desired += allocatePacks(itemRules, units)
         }
         return mergeByLineAndName(desired)
+    }
+
+    /**
+     * Closest next-pack hint while ringing, e.g. "Add 1 more Redbull to get $1.00 off".
+     * Stored as a line-item note (not a discount) so it is not a red PROMO line
+     * and can be cleared before the receipt prints.
+     */
+    fun desiredNudges(rules: List<PromoRule>, lines: List<CartLine>): List<PromoNudge> {
+        val usableRules = rules.filter { it.active && it.requiredQty >= 2 }
+        val nudges = mutableListOf<PromoNudge>()
+        for ((_, itemRules) in usableRules.groupBy { it.itemId }) {
+            val matching = lines
+                .filter { line -> itemRules.any { matches(line, it) } && line.unitPriceCents >= 0 && line.quantity > 0 }
+                .sortedBy { it.lineItemId }
+            val units = matching.flatMap { line ->
+                List(line.quantity) { UnitSlot(line.lineItemId, line.unitPriceCents) }
+            }
+            if (units.isEmpty()) continue
+            closestNudge(itemRules, units)?.let { nudges += it }
+        }
+        return nudges
+    }
+
+    fun isHintNote(note: String?): Boolean {
+        val text = note?.trim().orEmpty()
+        return text.isNotEmpty() && hintNote.matches(text)
     }
 
     fun matches(line: CartLine, rule: PromoRule): Boolean {
@@ -65,6 +97,45 @@ object PromoCalculator {
      * regular price. Packs never cover the same unit twice.
      */
     private fun allocatePacks(itemRules: List<PromoRule>, units: List<UnitSlot>): List<DesiredDiscount> {
+        val plan = planPacks(itemRules, units)
+        if (plan.packs.isEmpty()) return emptyList()
+        val discounts = mutableListOf<DesiredDiscount>()
+        var idx = 0
+        for (rule in plan.packs) {
+            val slice = units.subList(idx, idx + rule.requiredQty).toList()
+            idx += rule.requiredQty
+            val savings = slice.sumOf { it.priceCents } - rule.bundlePriceCents
+            if (savings <= 0) continue
+            discounts += evenDiscounts(rule, slice, savings)
+        }
+        return discounts
+    }
+
+    private fun closestNudge(itemRules: List<PromoRule>, units: List<UnitSlot>): PromoNudge? {
+        val current = planPacks(itemRules, units)
+        val unitPrice = units.last().priceCents
+        val maxAdd = itemRules.maxOf { it.requiredQty }
+        for (add in 1..maxAdd) {
+            val extras = List(add) { UnitSlot(units.last().lineItemId, unitPrice) }
+            val newCost = planPacks(itemRules, units + extras).totalCost
+            val savings = current.totalCost + add * unitPrice - newCost
+            if (savings <= 0) continue
+            val packedQty = current.packs.sumOf { it.requiredQty }
+            val leftover = units.drop(packedQty)
+            val lineIds = (if (leftover.isNotEmpty()) leftover else units)
+                .map { it.lineItemId }
+                .toSet()
+            val name = itemRules.first().itemName
+            val more = if (add == 1) "1 more $name" else "$add more $name"
+            return PromoNudge(
+                lineItemIds = lineIds,
+                message = "Add $more to get ${formatCents(savings)} off",
+            )
+        }
+        return null
+    }
+
+    private fun planPacks(itemRules: List<PromoRule>, units: List<UnitSlot>): PackPlan {
         val n = units.size
         val cost = LongArray(n + 1) { INF }
         val prev = IntArray(n + 1) { -1 }
@@ -101,20 +172,12 @@ object PromoCalculator {
                 k -= 1
             }
         }
-        if (packs.isEmpty()) return emptyList()
-
         packs.sortByDescending { it.requiredQty }
-        val discounts = mutableListOf<DesiredDiscount>()
-        var idx = 0
-        for (rule in packs) {
-            val slice = units.subList(idx, idx + rule.requiredQty).toList()
-            idx += rule.requiredQty
-            val savings = slice.sumOf { it.priceCents } - rule.bundlePriceCents
-            if (savings <= 0) continue
-            discounts += evenDiscounts(rule, slice, savings)
-        }
-        return discounts
+        return PackPlan(packs, cost[n])
     }
+
+    private fun formatCents(cents: Long): String =
+        java.lang.String.format(java.util.Locale.US, "$%.2f", cents / 100.0)
 
     /**
      * Register stacks identical lines (same item + same discount) into one
@@ -153,6 +216,8 @@ object PromoCalculator {
                     amountCents = group.sumOf { it.amountCents },
                 )
             }
+
+    private data class PackPlan(val packs: List<PromoRule>, val totalCost: Long)
 
     private data class UnitSlot(val lineItemId: String, val priceCents: Long)
 }

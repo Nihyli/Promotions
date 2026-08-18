@@ -177,6 +177,50 @@ class PromoCalculatorTest {
         assertTrue(discounts.isEmpty())
     }
 
+    @Test
+    fun oneRedbullHintsToAddOneMore() {
+        val redbull = PromoRule(
+            id = 3,
+            name = "2 x Redbull for $5.00",
+            itemId = "item-rb",
+            itemName = "Redbull",
+            requiredQty = 2,
+            bundlePriceCents = 500,
+        )
+        val nudges = PromoCalculator.desiredNudges(
+            listOf(redbull),
+            listOf(CartLine("a", "item-rb", "Redbull", 300, 1)),
+        )
+        assertEquals(1, nudges.size)
+        assertEquals("Add 1 more Redbull to get $1.00 off", nudges.single().message)
+        assertEquals(setOf("a"), nudges.single().lineItemIds)
+    }
+
+    @Test
+    fun eightTry5HintsToAddTwoForTenPack() {
+        val nudges = PromoCalculator.desiredNudges(rules, listOf(line(qty = 8)))
+        assertEquals("Add 2 more Try 5 to get $2.00 off", nudges.single().message)
+    }
+
+    @Test
+    fun fourTry5HintsToAddOneForFivePack() {
+        val nudges = PromoCalculator.desiredNudges(rules, listOf(line(qty = 4)))
+        assertEquals("Add 1 more Try 5 to get $1.00 off", nudges.single().message)
+    }
+
+    @Test
+    fun tenTry5HintsToAddFiveForNextFivePack() {
+        val nudges = PromoCalculator.desiredNudges(rules, listOf(line(qty = 10)))
+        assertEquals("Add 5 more Try 5 to get $1.00 off", nudges.single().message)
+    }
+
+    @Test
+    fun hintNoteMatcher() {
+        assertTrue(PromoCalculator.isHintNote("Add 1 more Redbull to get $1.00 off"))
+        assertTrue(!PromoCalculator.isHintNote("extra shot"))
+        assertTrue(!PromoCalculator.isHintNote(null))
+    }
+
     private fun line(id: String = "li-try5", qty: Int) = CartLine(
         lineItemId = id,
         itemId = try5,

@@ -73,6 +73,13 @@ object PromoEngine {
                     desired.joinToString { "${it.name} ${it.amountCents}c on ${it.lineItemId}" },
             )
             val desiredByLine = desired.groupBy { it.lineItemId }
+            val ringing = order.payments.isNullOrEmpty()
+            val noteByLine = linkedMapOf<String, String>()
+            if (ringing) {
+                for (nudge in PromoCalculator.desiredNudges(rules, lines)) {
+                    for (id in nudge.lineItemIds) noteByLine[id] = nudge.message
+                }
+            }
 
             for (lineItem in lineItems) {
                 val existing = lineItem.discounts.orEmpty()
@@ -81,20 +88,33 @@ object PromoEngine {
 
                 val existingSig = existing.map { "${it.name}|${it.amount}" }.sorted()
                 val wantedSig = wanted.map { "${it.name}|${it.amountCents}" }.sorted()
-                if (existingSig == wantedSig) continue
-
-                val staleIds = existing.mapNotNull { it.id }
-                if (staleIds.isNotEmpty()) {
-                    connector.deleteLineItemDiscounts(orderId, lineItem.id, staleIds)
-                    Log.i(TAG, "Removed ${staleIds.size} stale promo discount(s) from line item ${lineItem.id}")
-                }
-                for (want in wanted) {
-                    val discount = Discount().apply {
-                        name = want.name
-                        amount = want.amountCents
+                if (existingSig != wantedSig) {
+                    val staleIds = existing.mapNotNull { it.id }
+                    if (staleIds.isNotEmpty()) {
+                        connector.deleteLineItemDiscounts(orderId, lineItem.id, staleIds)
+                        Log.i(TAG, "Removed ${staleIds.size} stale promo discount(s) from line item ${lineItem.id}")
                     }
-                    connector.addLineItemDiscount(orderId, lineItem.id, discount)
-                    Log.i(TAG, "Applied '${want.name}' (${want.amountCents}c) to line item ${lineItem.id}")
+                    for (want in wanted) {
+                        val discount = Discount().apply {
+                            name = want.name
+                            amount = want.amountCents
+                        }
+                        connector.addLineItemDiscount(orderId, lineItem.id, discount)
+                        Log.i(TAG, "Applied '${want.name}' (${want.amountCents}c) to line item ${lineItem.id}")
+                    }
+                }
+
+                val wantedNote = noteByLine[lineItem.id]
+                val currentNote = lineItem.note
+                when {
+                    wantedNote != null && currentNote != wantedNote -> {
+                        connector.setLineItemNote(orderId, lineItem.id, wantedNote)
+                        Log.i(TAG, "Hint on ${lineItem.id}: $wantedNote")
+                    }
+                    wantedNote == null && PromoCalculator.isHintNote(currentNote) -> {
+                        connector.setLineItemNote(orderId, lineItem.id, "")
+                        Log.i(TAG, "Cleared hint on ${lineItem.id}")
+                    }
                 }
             }
         } catch (e: Exception) {
