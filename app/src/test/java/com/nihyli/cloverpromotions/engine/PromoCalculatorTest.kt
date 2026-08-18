@@ -5,6 +5,7 @@ import com.nihyli.cloverpromotions.data.PromoRule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Calendar
 
 class PromoCalculatorTest {
 
@@ -573,6 +574,64 @@ class PromoCalculatorTest {
         )
         assertEquals(-250L, discounts.sumOf { it.amountCents })
     }
+
+    // ---- schedule ----
+
+    @Test
+    fun weekendOnlyRuleDoesNotApplyOnWednesday() {
+        val weekend = twoRedbullForFive.copy(daysOfWeek = PromoRule.WEEKEND_DAYS)
+        val wednesday = at(2026, Calendar.AUGUST, 19, 12, 0)
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(weekend),
+            listOf(rb("a"), rb("b")),
+            wednesday,
+        )
+        assertTrue(discounts.isEmpty())
+        val saturday = at(2026, Calendar.AUGUST, 22, 12, 0)
+        assertEquals(
+            -100L,
+            PromoCalculator.desiredDiscounts(listOf(weekend), listOf(rb("a"), rb("b")), saturday)
+                .sumOf { it.amountCents },
+        )
+    }
+
+    @Test
+    fun timeWindowAppliesAtStartNotBeforeAndOvernightWraps() {
+        val happyHour = twoRedbullForFive.copy(startMinute = 16 * 60, endMinute = 18 * 60)
+        val cart = listOf(rb("a"), rb("b"))
+        assertEquals(
+            -100L,
+            PromoCalculator.desiredDiscounts(listOf(happyHour), cart, at(2026, Calendar.AUGUST, 19, 16, 0))
+                .sumOf { it.amountCents },
+        )
+        assertTrue(
+            PromoCalculator.desiredDiscounts(listOf(happyHour), cart, at(2026, Calendar.AUGUST, 19, 15, 59))
+                .isEmpty(),
+        )
+
+        val overnight = twoRedbullForFive.copy(startMinute = 22 * 60, endMinute = 2 * 60)
+        assertEquals(
+            -100L,
+            PromoCalculator.desiredDiscounts(listOf(overnight), cart, at(2026, Calendar.AUGUST, 19, 23, 0))
+                .sumOf { it.amountCents },
+        )
+        assertEquals(
+            -100L,
+            PromoCalculator.desiredDiscounts(listOf(overnight), cart, at(2026, Calendar.AUGUST, 19, 1, 0))
+                .sumOf { it.amountCents },
+        )
+        assertTrue(
+            PromoCalculator.desiredDiscounts(listOf(overnight), cart, at(2026, Calendar.AUGUST, 19, 12, 0))
+                .isEmpty(),
+        )
+    }
+
+    private fun at(year: Int, month: Int, day: Int, hour: Int, minute: Int): Calendar =
+        Calendar.getInstance().apply {
+            clear()
+            set(year, month, day, hour, minute, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
 
     private fun line(id: String = "li-try5", qty: Int) = CartLine(
         lineItemId = id,

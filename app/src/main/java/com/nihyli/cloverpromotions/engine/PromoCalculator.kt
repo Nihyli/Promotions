@@ -1,6 +1,7 @@
 package com.nihyli.cloverpromotions.engine
 
 import com.nihyli.cloverpromotions.data.PromoRule
+import java.util.Calendar
 
 /** One scanned unit of an item on the order (Register may combine many onto one line). */
 data class CartLine(
@@ -38,9 +39,13 @@ object PromoCalculator {
     private const val INF = Long.MAX_VALUE / 4
     private val hintNote = Regex("""^Add \d+ more .+ to get \$[\d.]+ off$""")
 
-    fun desiredDiscounts(rules: List<PromoRule>, lines: List<CartLine>): List<DesiredDiscount> {
+    fun desiredDiscounts(
+        rules: List<PromoRule>,
+        lines: List<CartLine>,
+        now: Calendar = Calendar.getInstance(),
+    ): List<DesiredDiscount> {
         val desired = mutableListOf<DesiredDiscount>()
-        forEachFamily(rules, lines) { familyRules, _, units ->
+        forEachFamily(rules, lines, now) { familyRules, _, units ->
             desired += allocatePacks(familyRules, units)
         }
         return mergeByLineAndName(desired)
@@ -51,9 +56,13 @@ object PromoCalculator {
      * Stored as a line-item note (not a discount) so it is not a red PROMO line
      * and can be cleared before the receipt prints.
      */
-    fun desiredNudges(rules: List<PromoRule>, lines: List<CartLine>): List<PromoNudge> {
+    fun desiredNudges(
+        rules: List<PromoRule>,
+        lines: List<CartLine>,
+        now: Calendar = Calendar.getInstance(),
+    ): List<PromoNudge> {
         val nudges = mutableListOf<PromoNudge>()
-        forEachFamily(rules, lines) { familyRules, _, units ->
+        forEachFamily(rules, lines, now) { familyRules, _, units ->
             closestNudge(familyRules, units)?.let { nudges += it }
         }
         return nudges
@@ -64,9 +73,13 @@ object PromoCalculator {
      * Leftover units get the hint; packed units get "" (not null) so a cleared
      * hint on the first unit matches the others.
      */
-    fun desiredNotes(rules: List<PromoRule>, lines: List<CartLine>): Map<String, String> {
+    fun desiredNotes(
+        rules: List<PromoRule>,
+        lines: List<CartLine>,
+        now: Calendar = Calendar.getInstance(),
+    ): Map<String, String> {
         val notes = linkedMapOf<String, String>()
-        forEachFamily(rules, lines) { familyRules, matching, units ->
+        forEachFamily(rules, lines, now) { familyRules, matching, units ->
             val nudge = closestNudge(familyRules, units)
             for (line in matching) {
                 notes[line.lineItemId] =
@@ -101,17 +114,18 @@ object PromoCalculator {
     }
 
     /**
-     * Groups active rules into families keyed by their exact item set, then walks
-     * families in creation order. Each line is claimed by the first family whose
-     * items include it, so overlapping promotions never double-count a unit.
+     * Groups active, in-effect rules into families keyed by their exact item set,
+     * then walks families in creation order. Each line is claimed by the first
+     * family whose items include it, so overlapping promotions never double-count.
      */
     private inline fun forEachFamily(
         rules: List<PromoRule>,
         lines: List<CartLine>,
+        now: Calendar,
         block: (familyRules: List<PromoRule>, matching: List<CartLine>, units: List<UnitSlot>) -> Unit,
     ) {
         val families = rules
-            .filter { it.active && it.requiredQty >= 2 && it.items.isNotEmpty() }
+            .filter { it.active && it.requiredQty >= 2 && it.items.isNotEmpty() && it.isInEffect(now) }
             .groupBy { rule -> rule.items.map { it.id }.toSortedSet() }
             .values
             .sortedBy { group -> group.minOf { it.id } }

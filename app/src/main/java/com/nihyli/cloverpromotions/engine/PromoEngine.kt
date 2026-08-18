@@ -6,6 +6,7 @@ import com.clover.sdk.util.CloverAccount
 import com.clover.sdk.v3.order.Discount
 import com.clover.sdk.v3.order.OrderConnector
 import com.nihyli.cloverpromotions.data.PromoDatabase
+import java.util.Calendar
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -66,7 +67,8 @@ object PromoEngine {
                     quantity = PromoCalculator.quantityFromUnitQty(li.unitQty),
                 )
             }
-            val desired = PromoCalculator.desiredDiscounts(rules, lines)
+            val now = Calendar.getInstance()
+            val desired = PromoCalculator.desiredDiscounts(rules, lines, now)
             Log.i(
                 TAG,
                 "Desired discounts: " +
@@ -75,7 +77,7 @@ object PromoEngine {
             val desiredByLine = desired.groupBy { it.lineItemId }
             val ringing = order.payments.isNullOrEmpty()
             val noteByLine = if (ringing) {
-                PromoCalculator.desiredNotes(rules, lines)
+                PromoCalculator.desiredNotes(rules, lines, now)
             } else {
                 emptyMap()
             }

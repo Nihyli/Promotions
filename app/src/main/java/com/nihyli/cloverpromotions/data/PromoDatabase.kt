@@ -10,7 +10,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import org.json.JSONArray
 import org.json.JSONObject
 
-@Database(entities = [PromoRule::class], version = 2, exportSchema = false)
+@Database(entities = [PromoRule::class], version = 3, exportSchema = false)
 @TypeConverters(PromoConverters::class)
 abstract class PromoDatabase : RoomDatabase() {
     abstract fun rules(): PromoRuleDao
@@ -66,13 +66,34 @@ abstract class PromoDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v3 adds schedule columns used now, plus promo kind, percent, buy/get,
+         * max uses, and savings tracking for later features. Extra columns stay
+         * inert (BUNDLE + FIXED_PRICE, unlimited uses) so later commits don't
+         * need another schema bump. Item JSON is left as-is.
+         */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE promo_rules ADD COLUMN kind TEXT NOT NULL DEFAULT 'BUNDLE'")
+                db.execSQL("ALTER TABLE promo_rules ADD COLUMN percentOff INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE promo_rules ADD COLUMN buyQty INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE promo_rules ADD COLUMN getQty INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE promo_rules ADD COLUMN maxUsesPerOrder INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE promo_rules ADD COLUMN daysOfWeek INTEGER NOT NULL DEFAULT 127")
+                db.execSQL("ALTER TABLE promo_rules ADD COLUMN startMinute INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE promo_rules ADD COLUMN endMinute INTEGER NOT NULL DEFAULT 1440")
+                db.execSQL("ALTER TABLE promo_rules ADD COLUMN bundlePriceMode TEXT NOT NULL DEFAULT 'FIXED_PRICE'")
+                db.execSQL("ALTER TABLE promo_rules ADD COLUMN savingsCents INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun get(context: Context): PromoDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     PromoDatabase::class.java,
                     "promotions.db",
-                ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
             }
     }
 }

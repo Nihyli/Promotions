@@ -4,7 +4,7 @@ import androidx.room.TypeConverter
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Serializes a promotion's item list to JSON for storage in a single column. */
+/** Serializes a promotion's item list (and enums) for Room columns. */
 class PromoConverters {
     @TypeConverter
     fun itemsToJson(items: List<PromoItemRef>): String {
@@ -28,4 +28,19 @@ class PromoConverters {
             }
         }
     }
+
+    @TypeConverter
+    fun promoKindToString(kind: PromoKind): String = kind.name
+
+    @TypeConverter
+    fun stringToPromoKind(value: String?): PromoKind =
+        value?.let { runCatching { PromoKind.valueOf(it) }.getOrNull() } ?: PromoKind.BUNDLE
+
+    @TypeConverter
+    fun bundlePriceModeToString(mode: BundlePriceMode): String = mode.name
+
+    @TypeConverter
+    fun stringToBundlePriceMode(value: String?): BundlePriceMode =
+        value?.let { runCatching { BundlePriceMode.valueOf(it) }.getOrNull() }
+            ?: BundlePriceMode.FIXED_PRICE
 }

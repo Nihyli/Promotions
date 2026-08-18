@@ -2,6 +2,20 @@ package com.nihyli.cloverpromotions.data
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import java.util.Calendar
+import java.util.Locale
+
+/**
+ * How a promotion computes its discount.
+ * Stored in Room v3; only [BUNDLE] is used until later commits.
+ */
+enum class PromoKind { BUNDLE, PERCENT_OFF, BUY_X_GET_Y }
+
+/**
+ * How a [PromoKind.BUNDLE] deal reacts when inventory prices change.
+ * Migrated rows stay [FIXED_PRICE]. TRACK_SAVINGS is inert until a later commit.
+ */
+enum class BundlePriceMode { FIXED_PRICE, TRACK_SAVINGS }
 
 /** One inventory item that belongs to a promotion (e.g. a single Red Bull flavor/SKU). */
 data class PromoItemRef(val id: String, val name: String)
@@ -17,6 +31,9 @@ data class PromoItemRef(val id: String, val name: String)
  *
  * [label] is the shared display name for the group (e.g. "Red Bull") used in the
  * promotion name and cashier hints.
+ *
+ * Extra v3 columns (kind, percent/buy-get, max uses, savings) are stored now so
+ * later features don't need another schema bump; they stay at defaults here.
  */
 @Entity(tableName = "promo_rules")
 data class PromoRule(
@@ -27,6 +44,16 @@ data class PromoRule(
     val requiredQty: Int,
     val bundlePriceCents: Long,
     val active: Boolean = true,
+    val kind: PromoKind = PromoKind.BUNDLE,
+    val percentOff: Int = 0,
+    val buyQty: Int = 0,
+    val getQty: Int = 0,
+    val maxUsesPerOrder: Int = 0,
+    val daysOfWeek: Int = ALL_DAYS,
+    val startMinute: Int = 0,
+    val endMinute: Int = END_OF_DAY_MINUTE,
+    val bundlePriceMode: BundlePriceMode = BundlePriceMode.FIXED_PRICE,
+    val savingsCents: Long = 0,
 ) {
     /**
      * Short group name for titles and hints (e.g. "Candy", "Red Bull").
@@ -43,8 +70,60 @@ data class PromoRule(
 
     /** Title shown in the list and on receipts, e.g. "3 x Candy for $3.00". */
     fun displayTitle(): String {
-        val dollars = java.lang.String.format(java.util.Locale.US, "$%.2f", bundlePriceCents / 100.0)
+        val dollars = java.lang.String.format(Locale.US, "$%.2f", bundlePriceCents / 100.0)
         return "$requiredQty x ${groupDisplayName()} for $dollars"
+    }
+
+    /**
+     * True when local [at] falls on an enabled weekday and inside the daily
+     * window. Does not look at [active] — the calculator filters that separately.
+     *
+     * Windows are half-open `[startMinute, endMinute)`. `endMinute == 1440`
+     * is end-of-day. When `startMinute > endMinute` the window spans midnight
+     * (e.g. 22:00–02:00).
+     */
+    fun isInEffect(at: Calendar = Calendar.getInstance()): Boolean {
+        val dayIndex = at.get(Calendar.DAY_OF_WEEK) - Calendar.SUNDAY
+        if (dayIndex !in 0..6) return false
+        if (daysOfWeek and (1 shl dayIndex) == 0) return false
+
+        val minuteOfDay = at.get(Calendar.HOUR_OF_DAY) * 60 + at.get(Calendar.MINUTE)
+        val start = startMinute
+        val end = endMinute
+        return if (start <= end) {
+            minuteOfDay >= start && minuteOfDay < end
+        } else {
+            minuteOfDay >= start || minuteOfDay < end
+        }
+    }
+
+    /** Short schedule label for the list row, or null when the deal is always on. */
+    fun scheduleSummary(): String? {
+        val daysPart = when (daysOfWeek and ALL_DAYS) {
+            ALL_DAYS -> null
+            WEEKEND_DAYS -> "Weekends"
+            WEEKDAY_DAYS -> "Weekdays"
+            0 -> "No days"
+            else -> DAY_ABBREV.filterIndexed { i, _ -> daysOfWeek and (1 shl i) != 0 }
+                .joinToString("/")
+        }
+        val allDay = startMinute <= 0 && endMinute >= END_OF_DAY_MINUTE
+        val timePart = if (allDay) null else "${formatClock12(startMinute)}–${formatClock12(endMinute)}"
+        return when {
+            daysPart == null && timePart == null -> null
+            daysPart != null && timePart != null -> "$daysPart $timePart"
+            else -> daysPart ?: timePart
+        }
+    }
+
+    companion object {
+        /** Bits 0–6 = [Calendar.SUNDAY]..[Calendar.SATURDAY]. */
+        const val ALL_DAYS = 0b1111111
+        const val WEEKEND_DAYS = 0b1000001
+        const val WEEKDAY_DAYS = 0b0111110
+        const val END_OF_DAY_MINUTE = 24 * 60
+
+        private val DAY_ABBREV = listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
     }
 }
 
@@ -55,4 +134,34 @@ fun looksLikeFullPromoTitle(text: String): Boolean {
     if (value.contains(" for ", ignoreCase = true) && value.firstOrNull()?.isDigit() == true) return true
     if (Regex("""^\d+\s*x\s""", RegexOption.IGNORE_CASE).containsMatchIn(value)) return true
     return false
+}
+
+/** Parses `H:mm` / `HH:mm` (and a bare hour) into minutes from midnight. `24:00` → 1440. */
+fun parseClockMinutes(text: String): Int? {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return null
+    val match = Regex("""^(\d{1,2})(?::(\d{2}))?$""").matchEntire(trimmed) ?: return null
+    val hour = match.groupValues[1].toInt()
+    val minute = match.groupValues[2].ifEmpty { "0" }.toInt()
+    if (minute !in 0..59) return null
+    if (hour == 24) return if (minute == 0) PromoRule.END_OF_DAY_MINUTE else null
+    if (hour !in 0..23) return null
+    return hour * 60 + minute
+}
+
+fun formatClockMinutes24(minutes: Int): String {
+    val clamped = minutes.coerceIn(0, PromoRule.END_OF_DAY_MINUTE)
+    val hour = clamped / 60
+    val min = clamped % 60
+    return String.format(Locale.US, "%02d:%02d", hour, min)
+}
+
+internal fun formatClock12(minutes: Int): String {
+    val clamped = minutes.coerceIn(0, PromoRule.END_OF_DAY_MINUTE)
+    if (clamped >= PromoRule.END_OF_DAY_MINUTE) return "12am"
+    val hour24 = clamped / 60
+    val min = clamped % 60
+    val ampm = if (hour24 < 12) "am" else "pm"
+    val hour12 = (hour24 % 12).let { if (it == 0) 12 else it }
+    return if (min == 0) "$hour12$ampm" else String.format(Locale.US, "%d:%02d%s", hour12, min, ampm)
 }

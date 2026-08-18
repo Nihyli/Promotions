@@ -6,13 +6,16 @@ import android.content.Intent
 import android.content.IntentFilter
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -49,6 +54,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.clover.sdk.v3.scanner.BarcodeResult
 import com.nihyli.cloverpromotions.data.PromoItemRef
 import com.nihyli.cloverpromotions.data.PromoRule
+import com.nihyli.cloverpromotions.data.formatClockMinutes24
+import com.nihyli.cloverpromotions.data.parseClockMinutes
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -95,7 +102,13 @@ fun RulesScreen(viewModel: MainViewModel) {
                 items(rules, key = { it.id }) { rule ->
                     ListItem(
                         headlineContent = { Text(rule.displayTitle()) },
-                        supportingContent = { Text(itemsSummary(rule.items)) },
+                        supportingContent = {
+                            Text(
+                                listSupportingLine(rule),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
                         leadingContent = {
                             Switch(
                                 checked = rule.active,
@@ -155,6 +168,13 @@ private fun itemsSummary(items: List<PromoItemRef>): String = when {
     else -> items.joinToString { it.name }
 }
 
+private fun listSupportingLine(rule: PromoRule): String {
+    val parts = mutableListOf<String>()
+    rule.scheduleSummary()?.let { parts += it }
+    parts += itemsSummary(rule.items)
+    return parts.joinToString(" \u00b7 ")
+}
+
 @Composable
 private fun RuleEditorDialog(
     viewModel: MainViewModel,
@@ -175,15 +195,21 @@ private fun RuleEditorDialog(
             existing?.let { String.format(java.util.Locale.US, "%.2f", it.bundlePriceCents / 100.0) } ?: "",
         )
     }
+    var daysMask by remember { mutableIntStateOf(existing?.daysOfWeek ?: PromoRule.ALL_DAYS) }
+    var startText by remember { mutableStateOf(initialClockField(existing, start = true)) }
+    var endText by remember { mutableStateOf(initialClockField(existing, start = false)) }
     var showItemPicker by remember { mutableStateOf(false) }
 
     val qty = qtyText.toIntOrNull()
     val priceCents = dollarsToCents(priceText)
     val effectiveLabel = labelText.ifBlank { selectedItems.firstOrNull()?.name ?: "" }
+    val times = editorTimes(startText, endText)
     val valid = selectedItems.isNotEmpty() &&
         effectiveLabel.isNotBlank() &&
         qty != null && qty >= 2 &&
-        priceCents != null && priceCents > 0
+        priceCents != null && priceCents > 0 &&
+        daysMask and PromoRule.ALL_DAYS != 0 &&
+        times != null
 
     val autoName = if (valid) {
         "$qty x $effectiveLabel for ${centsToDollars(priceCents!!)}"
@@ -202,7 +228,12 @@ private fun RuleEditorDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (existing == null) "New promotion" else "Edit promotion") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 OutlinedButton(
                     onClick = { showItemPicker = true },
                     modifier = Modifier.fillMaxWidth(),
@@ -247,6 +278,32 @@ private fun RuleEditorDialog(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth(),
                 )
+
+                Text("Days (device local time)", style = MaterialTheme.typography.bodySmall)
+                DayToggles(mask = daysMask, onChange = { daysMask = it })
+
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = startText,
+                        onValueChange = { startText = it },
+                        label = { Text("Start HH:mm") },
+                        placeholder = { Text("all day") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = endText,
+                        onValueChange = { endText = it },
+                        label = { Text("End HH:mm") },
+                        placeholder = { Text("all day") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+
                 if (autoName.isNotEmpty()) {
                     Text(
                         "Will show on receipts as: PROMO: $autoName",
@@ -267,6 +324,7 @@ private fun RuleEditorDialog(
             TextButton(
                 enabled = valid,
                 onClick = {
+                    val window = times ?: return@TextButton
                     onSave(
                         PromoRule(
                             id = existing?.id ?: 0,
@@ -276,6 +334,9 @@ private fun RuleEditorDialog(
                             requiredQty = qty!!,
                             bundlePriceCents = priceCents!!,
                             active = existing?.active ?: true,
+                            daysOfWeek = daysMask,
+                            startMinute = window.first,
+                            endMinute = window.second,
                         ),
                     )
                 },
@@ -295,6 +356,32 @@ private fun RuleEditorDialog(
                 showItemPicker = false
             },
         )
+    }
+}
+
+@Composable
+private fun DayToggles(mask: Int, onChange: (Int) -> Unit) {
+    val labels = listOf("S", "M", "T", "W", "T", "F", "S")
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        labels.forEachIndexed { i, label ->
+            val selected = mask and (1 shl i) != 0
+            OutlinedButton(
+                onClick = { onChange(mask xor (1 shl i)) },
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(0.dp),
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                    color = if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -421,4 +508,21 @@ private fun BarcodeScanEffect(onScan: (String) -> Unit) {
         }
     }
 }
+
+private fun initialClockField(existing: PromoRule?, start: Boolean): String {
+    if (existing == null) return ""
+    if (existing.startMinute <= 0 && existing.endMinute >= PromoRule.END_OF_DAY_MINUTE) return ""
+    return formatClockMinutes24(if (start) existing.startMinute else existing.endMinute)
+}
+
+private fun editorTimes(startText: String, endText: String): Pair<Int, Int>? {
+    if (startText.isBlank() && endText.isBlank()) {
+        return 0 to PromoRule.END_OF_DAY_MINUTE
+    }
+    val start = parseClockMinutes(startText) ?: return null
+    val end = parseClockMinutes(endText) ?: return null
+    if (start == end) return null
+    return start to end
+}
+
 
