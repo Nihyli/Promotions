@@ -159,7 +159,7 @@ object PromoCalculator {
         val discounts = mutableListOf<DesiredDiscount>()
         for (pack in plan.packs) {
             val slice = pack.unitIndices.map { units[it] }
-            val savings = slice.sumOf { it.priceCents } - pack.rule.bundlePriceCents
+            val savings = packSavings(pack.rule, slice)
             if (savings <= 0) continue
             discounts += evenDiscounts(pack.rule, slice, savings)
         }
@@ -190,6 +190,12 @@ object PromoCalculator {
     }
 
     private fun planPacks(familyRules: List<PromoRule>, units: List<UnitSlot>): PackPlan {
+        val raw = planPacksDp(familyRules, units)
+        val packs = limitMaxUses(raw.packs, units)
+        return PackPlan(packs, customerCost(units, packs))
+    }
+
+    private fun planPacksDp(familyRules: List<PromoRule>, units: List<UnitSlot>): PackPlan {
         val n = units.size
         val cost = LongArray(n + 1) { INF }
         val prev = IntArray(n + 1) { -1 }
@@ -226,6 +232,32 @@ object PromoCalculator {
             }
         }
         return PackPlan(packs, cost[n])
+    }
+
+    /** Keep the packs that save the customer the most, up to each rule's cap. */
+    private fun limitMaxUses(packs: List<PlannedPack>, units: List<UnitSlot>): List<PlannedPack> {
+        if (packs.none { it.rule.maxUsesPerOrder > 0 }) return packs
+        return packs.groupBy { it.rule.id }.values.flatMap { group ->
+            val limit = group.first().rule.maxUsesPerOrder
+            if (limit <= 0) group
+            else group.sortedWith(
+                compareByDescending<PlannedPack> { pack ->
+                    packSavings(pack.rule, pack.unitIndices.map { units[it] })
+                }.thenBy { it.unitIndices.first },
+            ).take(limit)
+        }
+    }
+
+    private fun customerCost(units: List<UnitSlot>, packs: List<PlannedPack>): Long {
+        val savings = packs.sumOf { pack ->
+            packSavings(pack.rule, pack.unitIndices.map { units[it] }).coerceAtLeast(0L)
+        }
+        return units.sumOf { it.priceCents } - savings
+    }
+
+    private fun packSavings(rule: PromoRule, slice: List<UnitSlot>): Long {
+        if (slice.size < rule.requiredQty) return 0L
+        return (slice.sumOf { it.priceCents } - rule.bundlePriceCents).coerceAtLeast(0L)
     }
 
     private fun formatCents(cents: Long): String =

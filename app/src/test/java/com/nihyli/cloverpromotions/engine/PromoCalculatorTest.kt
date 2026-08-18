@@ -626,6 +626,17 @@ class PromoCalculatorTest {
         )
     }
 
+    // ---- max uses per order ----
+
+    @Test
+    fun maxUsesCapsPacksAndLeavesRemainderWithoutHint() {
+        val capped = twoRedbullForFive.copy(maxUsesPerOrder = 1)
+        val lines = listOf(rb("li", qty = 4))
+        val discounts = PromoCalculator.desiredDiscounts(listOf(capped), lines)
+        assertEquals(-100L, discounts.sumOf { it.amountCents })
+        assertTrue(PromoCalculator.desiredNudges(listOf(capped), lines).isEmpty())
+    }
+
     private fun at(year: Int, month: Int, day: Int, hour: Int, minute: Int): Calendar =
         Calendar.getInstance().apply {
             clear()

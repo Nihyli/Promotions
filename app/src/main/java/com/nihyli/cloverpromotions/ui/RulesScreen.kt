@@ -171,6 +171,7 @@ private fun itemsSummary(items: List<PromoItemRef>): String = when {
 private fun listSupportingLine(rule: PromoRule): String {
     val parts = mutableListOf<String>()
     rule.scheduleSummary()?.let { parts += it }
+    if (rule.maxUsesPerOrder > 0) parts += "max ${rule.maxUsesPerOrder}/order"
     parts += itemsSummary(rule.items)
     return parts.joinToString(" \u00b7 ")
 }
@@ -198,18 +199,27 @@ private fun RuleEditorDialog(
     var daysMask by remember { mutableIntStateOf(existing?.daysOfWeek ?: PromoRule.ALL_DAYS) }
     var startText by remember { mutableStateOf(initialClockField(existing, start = true)) }
     var endText by remember { mutableStateOf(initialClockField(existing, start = false)) }
+    var maxUsesText by remember {
+        mutableStateOf(existing?.maxUsesPerOrder?.takeIf { it > 0 }?.toString() ?: "")
+    }
     var showItemPicker by remember { mutableStateOf(false) }
 
     val qty = qtyText.toIntOrNull()
     val priceCents = dollarsToCents(priceText)
     val effectiveLabel = labelText.ifBlank { selectedItems.firstOrNull()?.name ?: "" }
     val times = editorTimes(startText, endText)
+    val maxUses = if (maxUsesText.isBlank()) {
+        0
+    } else {
+        maxUsesText.toIntOrNull()?.takeIf { it >= 0 }
+    }
     val valid = selectedItems.isNotEmpty() &&
         effectiveLabel.isNotBlank() &&
         qty != null && qty >= 2 &&
         priceCents != null && priceCents > 0 &&
         daysMask and PromoRule.ALL_DAYS != 0 &&
-        times != null
+        times != null &&
+        maxUses != null
 
     val autoName = if (valid) {
         "$qty x $effectiveLabel for ${centsToDollars(priceCents!!)}"
@@ -278,6 +288,15 @@ private fun RuleEditorDialog(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                OutlinedTextField(
+                    value = maxUsesText,
+                    onValueChange = { maxUsesText = it },
+                    label = { Text("Max uses per order (optional)") },
+                    placeholder = { Text("Unlimited") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
 
                 Text("Days (device local time)", style = MaterialTheme.typography.bodySmall)
                 DayToggles(mask = daysMask, onChange = { daysMask = it })
@@ -334,6 +353,7 @@ private fun RuleEditorDialog(
                             requiredQty = qty!!,
                             bundlePriceCents = priceCents!!,
                             active = existing?.active ?: true,
+                            maxUsesPerOrder = maxUses!!,
                             daysOfWeek = daysMask,
                             startMinute = window.first,
                             endMinute = window.second,
