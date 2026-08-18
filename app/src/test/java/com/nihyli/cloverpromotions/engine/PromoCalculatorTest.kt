@@ -27,6 +27,18 @@ class PromoCalculatorTest {
     )
     private val rules = listOf(fiveForFour, tenForSeven)
 
+    private val twoRedbullForFive = PromoRule(
+        id = 3,
+        name = "2 x Redbull for $5.00",
+        itemId = "item-rb",
+        itemName = "Redbull",
+        requiredQty = 2,
+        bundlePriceCents = 500,
+    )
+
+    private fun rb(id: String, priceCents: Long = 300, qty: Int = 1) =
+        CartLine(id, "item-rb", "Redbull", priceCents, qty)
+
     @Test
     fun tenUnitsUsesOnlyTheTenPack_notBothDeals() {
         val discounts = PromoCalculator.desiredDiscounts(rules, listOf(line(qty = 10)))
@@ -250,6 +262,166 @@ class PromoCalculatorTest {
         assertTrue(PromoCalculator.isHintNote("Add 1 more Redbull to get $1.00 off"))
         assertTrue(!PromoCalculator.isHintNote("extra shot"))
         assertTrue(!PromoCalculator.isHintNote(null))
+    }
+
+    @Test
+    fun hintNoteMatcherHandlesVariants() {
+        assertTrue(PromoCalculator.isHintNote("Add 12 more Try 5 to get $10.50 off"))
+        assertTrue(PromoCalculator.isHintNote("  Add 1 more Redbull to get $1.00 off  "))
+        assertTrue(!PromoCalculator.isHintNote(""))
+        assertTrue(!PromoCalculator.isHintNote("   "))
+        assertTrue(!PromoCalculator.isHintNote("Add one more Redbull to get $1.00 off"))
+        assertTrue(!PromoCalculator.isHintNote("Add 1 more Redbull to get 1 dollar off"))
+    }
+
+    // ---- quantityFromUnitQty: Clover stores quantity in thousandths ----
+
+    @Test
+    fun quantityFromUnitQtyHandlesNullAndNonPositive() {
+        assertEquals(1, PromoCalculator.quantityFromUnitQty(null))
+        assertEquals(1, PromoCalculator.quantityFromUnitQty(0))
+        assertEquals(1, PromoCalculator.quantityFromUnitQty(-5))
+    }
+
+    @Test
+    fun quantityFromUnitQtyConvertsThousandths() {
+        assertEquals(1, PromoCalculator.quantityFromUnitQty(1000))
+        assertEquals(2, PromoCalculator.quantityFromUnitQty(2000))
+        assertEquals(2, PromoCalculator.quantityFromUnitQty(2500))
+        assertEquals(15, PromoCalculator.quantityFromUnitQty(15000))
+    }
+
+    @Test
+    fun quantityFromUnitQtyTreatsSmallRawCountsAsUnits() {
+        // Fallback for callers that already pass a raw count (< 1000).
+        assertEquals(3, PromoCalculator.quantityFromUnitQty(3))
+        assertEquals(999, PromoCalculator.quantityFromUnitQty(999))
+    }
+
+    // ---- matches: item id first, name only as a fallback ----
+
+    @Test
+    fun matchesByItemIdEvenWhenNameDiffers() {
+        val line = CartLine("li", "item-try5", "Different Name", 100, 5)
+        assertTrue(PromoCalculator.matches(line, fiveForFour))
+    }
+
+    @Test
+    fun matchesFallsBackToNameWhenNoItemId() {
+        val nullId = CartLine("li", null, "try 5", 100, 5)
+        val blankId = CartLine("li", "  ", "TRY 5", 100, 5)
+        assertTrue(PromoCalculator.matches(nullId, fiveForFour))
+        assertTrue(PromoCalculator.matches(blankId, fiveForFour))
+    }
+
+    @Test
+    fun matchesFailsWithoutIdOrName() {
+        val line = CartLine("li", null, null, 100, 5)
+        assertTrue(!PromoCalculator.matches(line, fiveForFour))
+    }
+
+    // ---- discount edge cases ----
+
+    @Test
+    fun emptyInputsProduceNothing() {
+        assertTrue(PromoCalculator.desiredDiscounts(emptyList(), emptyList()).isEmpty())
+        assertTrue(PromoCalculator.desiredDiscounts(rules, emptyList()).isEmpty())
+        assertTrue(PromoCalculator.desiredDiscounts(emptyList(), listOf(line(qty = 10))).isEmpty())
+        assertTrue(PromoCalculator.desiredNudges(rules, emptyList()).isEmpty())
+        assertTrue(PromoCalculator.desiredNotes(rules, emptyList()).isEmpty())
+    }
+
+    @Test
+    fun zeroQuantityLineIsIgnored() {
+        val discounts = PromoCalculator.desiredDiscounts(rules, listOf(line(qty = 0)))
+        assertTrue(discounts.isEmpty())
+    }
+
+    @Test
+    fun negativePriceLineIsIgnored() {
+        val weird = CartLine("li", try5, "Try 5", unitPriceCents = -100, quantity = 10)
+        assertTrue(PromoCalculator.desiredDiscounts(rules, listOf(weird)).isEmpty())
+    }
+
+    @Test
+    fun ruleRequiringOneUnitIsIgnored() {
+        val single = PromoRule(
+            id = 9,
+            name = "1 x Try 5 for $0.50",
+            itemId = try5,
+            itemName = "Try 5",
+            requiredQty = 1,
+            bundlePriceCents = 50,
+        )
+        assertTrue(PromoCalculator.desiredDiscounts(listOf(single), listOf(line(qty = 5))).isEmpty())
+    }
+
+    @Test
+    fun bundlePriceEqualToRetailGivesNoDiscount() {
+        val breakEven = fiveForFour.copy(bundlePriceCents = 500) // 5 x $1.00 = $5.00
+        assertTrue(PromoCalculator.desiredDiscounts(listOf(breakEven), listOf(line(qty = 5))).isEmpty())
+    }
+
+    @Test
+    fun twentyUnitsOnOneLineMergeIntoASingleDiscountEntry() {
+        val discounts = PromoCalculator.desiredDiscounts(listOf(tenForSeven), listOf(line(qty = 20)))
+        assertEquals(1, discounts.size)
+        assertEquals("PROMO: 10 x Try 5 for $7.00", discounts.single().name)
+        assertEquals(-600L, discounts.single().amountCents)
+    }
+
+    @Test
+    fun mixedPriceBundleStillSpreadsSavingsEvenly() {
+        // $4.00 + $3.00 = $7.00 retail, 2-for-$5 saves $2.00 total.
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(twoRedbullForFive),
+            listOf(rb("a", priceCents = 400), rb("b", priceCents = 300)),
+        )
+        assertEquals(2, discounts.size)
+        assertEquals(-200L, discounts.sumOf { it.amountCents })
+        assertTrue(discounts.all { it.amountCents == -100L })
+    }
+
+    @Test
+    fun threeRedbullsDiscountTwoAndHintForTheLeftover() {
+        val lines = listOf(rb("a"), rb("b"), rb("c"))
+        val discounts = PromoCalculator.desiredDiscounts(listOf(twoRedbullForFive), lines)
+        // One 2-pack applies; the third stays at retail.
+        assertEquals(-100L, discounts.sumOf { it.amountCents })
+        assertEquals(-50L, discounts.single { it.lineItemId == "a" }.amountCents)
+        assertEquals(-50L, discounts.single { it.lineItemId == "b" }.amountCents)
+        assertTrue(discounts.none { it.lineItemId == "c" })
+
+        val notes = PromoCalculator.desiredNotes(listOf(twoRedbullForFive), lines)
+        assertEquals("", notes["a"])
+        assertEquals("", notes["b"])
+        assertEquals("Add 1 more Redbull to get $1.00 off", notes["c"])
+    }
+
+    // ---- nudge / note edge cases ----
+
+    @Test
+    fun notesSplitBetweenPackedAndLeftoverLines() {
+        // 5 on line "a" completes the 5-pack; 1 on line "b" is the leftover.
+        val notes = PromoCalculator.desiredNotes(
+            rules,
+            listOf(line(id = "a", qty = 5), line(id = "b", qty = 1)),
+        )
+        assertEquals("", notes["a"])
+        assertEquals("Add 4 more Try 5 to get $2.00 off", notes["b"])
+    }
+
+    @Test
+    fun belowThresholdHintsTowardTheOnlyLargePack() {
+        val nudges = PromoCalculator.desiredNudges(listOf(tenForSeven), listOf(line(qty = 3)))
+        assertEquals("Add 7 more Try 5 to get $3.00 off", nudges.single().message)
+    }
+
+    @Test
+    fun noActiveRulesProduceNoNudgesOrNotes() {
+        val inactive = listOf(fiveForFour.copy(active = false), tenForSeven.copy(active = false))
+        assertTrue(PromoCalculator.desiredNudges(inactive, listOf(line(qty = 8))).isEmpty())
+        assertTrue(PromoCalculator.desiredNotes(inactive, listOf(line(qty = 8))).isEmpty())
     }
 
     private fun line(id: String = "li-try5", qty: Int) = CartLine(
