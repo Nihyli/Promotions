@@ -17,7 +17,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** Lightweight projection of a Clover inventory item for the picker UI. */
-data class PickerItem(val id: String, val name: String, val priceCents: Long)
+data class PickerItem(
+    val id: String,
+    val name: String,
+    val priceCents: Long,
+    val sku: String = "",
+    val barcode: String = "",
+) {
+    fun matchesQuery(query: String): Boolean =
+        InventoryQuery.matches(name, sku, barcode, query)
+}
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val dao = PromoDatabase.get(app).rules()
@@ -55,6 +64,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     InventoryContract.Item.UUID,
                     InventoryContract.Item.NAME,
                     InventoryContract.Item.PRICE,
+                    InventoryContract.Item.SKU,
+                    InventoryContract.Item.CODE,
                 ),
                 null,
                 null,
@@ -66,6 +77,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         id = id,
                         name = cursor.getString(1) ?: "(unnamed)",
                         priceCents = cursor.getLong(2),
+                        sku = cursor.getString(3).orEmpty(),
+                        barcode = cursor.getString(4).orEmpty(),
                     )
                 }
             }

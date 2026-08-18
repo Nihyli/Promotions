@@ -1,6 +1,10 @@
 package com.nihyli.cloverpromotions.engine
 
+import com.nihyli.cloverpromotions.data.BundlePriceMode
+import com.nihyli.cloverpromotions.data.PromoKind
 import com.nihyli.cloverpromotions.data.PromoRule
+import com.nihyli.cloverpromotions.data.formatMoney
+import java.util.Calendar
 
 /** One scanned unit of an item on the order (Register may combine many onto one line). */
 data class CartLine(
@@ -17,39 +21,91 @@ data class DesiredDiscount(
     val amountCents: Long,
 )
 
+data class PromoNudge(
+    val lineItemIds: Set<String>,
+    val message: String,
+)
+
 /**
  * Picks promotion discounts for a cart.
  *
- * Multiple rules for the same item do not overlap on the same unit. For each
- * item we pick the cheapest mix of packs (5-for-$4, 10-for-$7, leftover at
- * regular price). Example: 5 → $4 deal, 10 → $7 deal, 15 → $7 + $4.
+ * A promotion can cover several inventory items (e.g. drink flavors/SKUs); units
+ * of any of them count together toward that promotion's packs. Rules that share
+ * the exact same set of items *and* the same [PromoKind] form a "family" and
+ * their packs mix without overlapping on the same unit (5-for-$4, 10-for-$7,
+ * leftover at regular price; 15 → $7 + $4). Families are independent: a unit is
+ * claimed by the earliest-created promotion whose items include it, so different
+ * promotions never count the same unit.
  */
 object PromoCalculator {
     const val PROMO_PREFIX = "PROMO: "
     private const val INF = Long.MAX_VALUE / 4
+    private val hintNote = Regex("""^Add \d+ more .+ to get \$[\d.]+ off$""")
 
-    fun desiredDiscounts(rules: List<PromoRule>, lines: List<CartLine>): List<DesiredDiscount> {
-        val usableRules = rules.filter { it.active && it.requiredQty >= 2 }
+    fun desiredDiscounts(
+        rules: List<PromoRule>,
+        lines: List<CartLine>,
+        now: Calendar = Calendar.getInstance(),
+    ): List<DesiredDiscount> {
         val desired = mutableListOf<DesiredDiscount>()
-
-        for ((_, itemRules) in usableRules.groupBy { it.itemId }) {
-            val matching = lines
-                .filter { line -> itemRules.any { matches(line, it) } && line.unitPriceCents >= 0 && line.quantity > 0 }
-                .sortedBy { it.lineItemId }
-            val units = matching.flatMap { line ->
-                List(line.quantity) { UnitSlot(line.lineItemId, line.unitPriceCents) }
-            }
-            if (units.isEmpty()) continue
-            desired += allocatePacks(itemRules, units)
+        forEachFamily(rules, lines, now) { familyRules, _, units ->
+            desired += allocatePacks(familyRules, units)
         }
         return mergeByLineAndName(desired)
     }
 
-    fun matches(line: CartLine, rule: PromoRule): Boolean {
-        val itemId = line.itemId
-        if (!itemId.isNullOrBlank()) return itemId == rule.itemId
+    /**
+     * Closest next-pack hint while ringing, e.g. "Add 1 more Red Bull to get $1.00 off".
+     * Stored as a line-item note (not a discount) so it is not a red PROMO line
+     * and can be cleared before the receipt prints.
+     */
+    fun desiredNudges(
+        rules: List<PromoRule>,
+        lines: List<CartLine>,
+        now: Calendar = Calendar.getInstance(),
+    ): List<PromoNudge> {
+        val nudges = mutableListOf<PromoNudge>()
+        forEachFamily(rules, lines, now) { familyRules, _, units ->
+            closestNudge(familyRules, units)?.let { nudges += it }
+        }
+        return nudges
+    }
+
+    /**
+     * Note to put on each matching line so Register can stack identical rows.
+     * Leftover units get the hint; packed units get "" (not null) so a cleared
+     * hint on the first unit matches the others.
+     */
+    fun desiredNotes(
+        rules: List<PromoRule>,
+        lines: List<CartLine>,
+        now: Calendar = Calendar.getInstance(),
+    ): Map<String, String> {
+        val notes = linkedMapOf<String, String>()
+        forEachFamily(rules, lines, now) { familyRules, matching, units ->
+            val nudge = closestNudge(familyRules, units)
+            for (line in matching) {
+                notes[line.lineItemId] =
+                    if (nudge != null && line.lineItemId in nudge.lineItemIds) nudge.message else ""
+            }
+        }
+        return notes
+    }
+
+    fun isHintNote(note: String?): Boolean {
+        val text = note?.trim().orEmpty()
+        return text.isNotEmpty() && hintNote.matches(text)
+    }
+
+    /** True if [line] is one of the inventory items covered by [rule]. */
+    fun matches(line: CartLine, rule: PromoRule): Boolean =
+        rule.items.any { ref -> matchesItem(line, ref.id, ref.name) }
+
+    private fun matchesItem(line: CartLine, itemId: String, itemName: String): Boolean {
+        val lineItemId = line.itemId
+        if (!lineItemId.isNullOrBlank()) return lineItemId == itemId
         val name = line.itemName ?: return false
-        return name.equals(rule.itemName, ignoreCase = true)
+        return name.equals(itemName, ignoreCase = true)
     }
 
     /** Clover stores quantity in thousandths (2 items → 2000). */
@@ -61,10 +117,100 @@ object PromoCalculator {
     }
 
     /**
-     * Cheapest way to ring [units] using the item's packs, then leftover at
+     * Groups active, in-effect rules into families keyed by item set + kind,
+     * then walks families in creation order. Each line is claimed by the first
+     * family whose items include it, so overlapping promotions never double-count.
+     */
+    private inline fun forEachFamily(
+        rules: List<PromoRule>,
+        lines: List<CartLine>,
+        now: Calendar,
+        block: (familyRules: List<PromoRule>, matching: List<CartLine>, units: List<UnitSlot>) -> Unit,
+    ) {
+        val families = rules
+            .filter { it.active && it.packSize() >= 2 && it.items.isNotEmpty() && it.isInEffect(now) }
+            .groupBy { rule -> rule.items.map { it.id }.toSortedSet() to rule.kind }
+            .values
+            .sortedBy { group -> group.minOf { it.id } }
+
+        val claimed = mutableSetOf<String>()
+        for (familyRules in families) {
+            val matching = lines
+                .filter { line ->
+                    line.lineItemId !in claimed &&
+                        line.unitPriceCents >= 0 &&
+                        line.quantity > 0 &&
+                        familyRules.any { matches(line, it) }
+                }
+                .sortedBy { it.lineItemId }
+            if (matching.isEmpty()) continue
+            claimed += matching.map { it.lineItemId }
+            val units = matching.flatMap { line ->
+                List(line.quantity) { UnitSlot(line.lineItemId, line.unitPriceCents) }
+            }.sortedByDescending { it.priceCents }
+            block(familyRules, matching, units)
+        }
+    }
+
+    /**
+     * Cheapest way to ring [units] using the family's packs, then leftover at
      * regular price. Packs never cover the same unit twice.
      */
-    private fun allocatePacks(itemRules: List<PromoRule>, units: List<UnitSlot>): List<DesiredDiscount> {
+    private fun allocatePacks(familyRules: List<PromoRule>, units: List<UnitSlot>): List<DesiredDiscount> {
+        val plan = planPacks(familyRules, units)
+        if (plan.packs.isEmpty()) return emptyList()
+        val discounts = mutableListOf<DesiredDiscount>()
+        for (pack in plan.packs) {
+            val slice = pack.unitIndices.map { units[it] }
+            val savings = packSavings(pack.rule, slice)
+            if (savings <= 0) continue
+            discounts += evenDiscounts(pack.rule, slice, savings)
+        }
+        return discounts
+    }
+
+    private fun closestNudge(familyRules: List<PromoRule>, units: List<UnitSlot>): PromoNudge? {
+        val current = planPacks(familyRules, units)
+        val packedIdx = current.packs.flatMap { it.unitIndices }.toHashSet()
+        val leftover = units.filterIndexed { index, _ -> index !in packedIdx }
+        if (leftover.isEmpty()) return null
+
+        val unitPrice = units.last().priceCents
+        val label = familyRules.minByOrNull { it.id }?.groupDisplayName().orEmpty()
+        val maxAdd = familyRules.maxOf { it.packSize() }
+        for (add in 1..maxAdd) {
+            val extras = List(add) { UnitSlot(units.last().lineItemId, unitPrice) }
+            val newCost = planPacks(familyRules, units + extras).totalCost
+            val savings = current.totalCost + add * unitPrice - newCost
+            if (savings <= 0) continue
+            val more = if (add == 1) "1 more $label" else "$add more $label"
+            return PromoNudge(
+                lineItemIds = leftover.map { it.lineItemId }.toSet(),
+                message = "Add $more to get ${formatMoney(savings)} off",
+            )
+        }
+        return null
+    }
+
+    /**
+     * Fixed-price bundles keep the original DP (5/10/15 mixing). Percent, BOGO,
+     * and track-savings packs have a cost that depends on which units are in the
+     * pack, so those families are filled greedily from the expensive end.
+     */
+    private fun planPacks(familyRules: List<PromoRule>, units: List<UnitSlot>): PackPlan {
+        val raw = if (familyRules.all { it.usesFixedBundleDp() }) {
+            planPacksDp(familyRules, units)
+        } else {
+            planPacksGreedy(familyRules, units)
+        }
+        val packs = limitMaxUses(raw.packs, units)
+        return PackPlan(packs, customerCost(units, packs))
+    }
+
+    private fun PromoRule.usesFixedBundleDp(): Boolean =
+        kind == PromoKind.BUNDLE && bundlePriceMode == BundlePriceMode.FIXED_PRICE
+
+    private fun planPacksDp(familyRules: List<PromoRule>, units: List<UnitSlot>): PackPlan {
         val n = units.size
         val cost = LongArray(n + 1) { INF }
         val prev = IntArray(n + 1) { -1 }
@@ -75,13 +221,12 @@ object PromoCalculator {
             cost[k] = cost[k - 1] + units[k - 1].priceCents
             prev[k] = k - 1
             used[k] = null
-            for (rule in itemRules) {
+            for (rule in familyRules) {
                 val qty = rule.requiredQty
                 if (k < qty) continue
                 val candidate = cost[k - qty] + rule.bundlePriceCents
                 val better = candidate < cost[k] ||
-                    (candidate == cost[k] && used[k] == null) ||
-                    (candidate == cost[k] && (used[k]?.requiredQty ?: 0) < qty)
+                    (candidate == cost[k] && used[k] != null && (used[k]?.requiredQty ?: 0) < qty)
                 if (better) {
                     cost[k] = candidate
                     prev[k] = k - qty
@@ -90,30 +235,89 @@ object PromoCalculator {
             }
         }
 
-        val packs = mutableListOf<PromoRule>()
+        val packs = mutableListOf<PlannedPack>()
         var k = n
         while (k > 0) {
             val rule = used[k]
             if (rule != null) {
-                packs += rule
+                packs += PlannedPack(rule, (k - rule.requiredQty) until k)
                 k = prev[k]
             } else {
                 k -= 1
             }
         }
-        if (packs.isEmpty()) return emptyList()
+        return PackPlan(packs, cost[n])
+    }
 
-        packs.sortByDescending { it.requiredQty }
-        val discounts = mutableListOf<DesiredDiscount>()
-        var idx = 0
-        for (rule in packs) {
-            val slice = units.subList(idx, idx + rule.requiredQty).toList()
-            idx += rule.requiredQty
-            val savings = slice.sumOf { it.priceCents } - rule.bundlePriceCents
-            if (savings <= 0) continue
-            discounts += evenDiscounts(rule, slice, savings)
+    private fun planPacksGreedy(familyRules: List<PromoRule>, units: List<UnitSlot>): PackPlan {
+        val packs = mutableListOf<PlannedPack>()
+        var offset = 0
+        val n = units.size
+        while (offset < n) {
+            var bestRule: PromoRule? = null
+            var bestSavings = 0L
+            for (rule in familyRules) {
+                val size = rule.packSize()
+                if (size < 2 || offset + size > n) continue
+                val slice = units.subList(offset, offset + size)
+                val savings = packSavings(rule, slice)
+                if (savings <= 0L) continue
+                val better = savings > bestSavings ||
+                    (savings == bestSavings && size > (bestRule?.packSize() ?: 0))
+                if (better) {
+                    bestSavings = savings
+                    bestRule = rule
+                }
+            }
+            val chosen = bestRule ?: break
+            val size = chosen.packSize()
+            packs += PlannedPack(chosen, offset until (offset + size))
+            offset += size
         }
-        return discounts
+        return PackPlan(packs, customerCost(units, packs))
+    }
+
+    /** Keep the packs that save the customer the most, up to each rule's cap. */
+    private fun limitMaxUses(packs: List<PlannedPack>, units: List<UnitSlot>): List<PlannedPack> {
+        if (packs.none { it.rule.maxUsesPerOrder > 0 }) return packs
+        return packs.groupBy { it.rule.id }.values.flatMap { group ->
+            val limit = group.first().rule.maxUsesPerOrder
+            if (limit <= 0) group
+            else group.sortedWith(
+                compareByDescending<PlannedPack> { pack ->
+                    packSavings(pack.rule, pack.unitIndices.map { units[it] })
+                }.thenBy { it.unitIndices.first },
+            ).take(limit)
+        }
+    }
+
+    private fun customerCost(units: List<UnitSlot>, packs: List<PlannedPack>): Long {
+        val savings = packs.sumOf { pack ->
+            packSavings(pack.rule, pack.unitIndices.map { units[it] }).coerceAtLeast(0L)
+        }
+        return units.sumOf { it.priceCents } - savings
+    }
+
+    private fun packSavings(rule: PromoRule, slice: List<UnitSlot>): Long {
+        if (slice.size < rule.packSize()) return 0L
+        val retail = slice.sumOf { it.priceCents }
+        val savings = when (rule.kind) {
+            PromoKind.BUNDLE -> when (rule.bundlePriceMode) {
+                BundlePriceMode.FIXED_PRICE -> retail - rule.bundlePriceCents
+                BundlePriceMode.TRACK_SAVINGS -> {
+                    if (retail <= rule.savingsCents) 0L else rule.savingsCents
+                }
+            }
+            PromoKind.PERCENT_OFF -> {
+                if (rule.percentOff !in 1..100) 0L
+                else (retail * rule.percentOff.toLong()) / 100L
+            }
+            PromoKind.BUY_X_GET_Y -> {
+                if (rule.buyQty < 1 || rule.getQty < 1) 0L
+                else slice.sortedBy { it.priceCents }.take(rule.getQty).sumOf { it.priceCents }
+            }
+        }
+        return savings.coerceAtLeast(0L)
     }
 
     /**
@@ -126,18 +330,32 @@ object PromoCalculator {
         bundled: List<UnitSlot>,
         totalSavings: Long,
     ): List<DesiredDiscount> {
+        if (totalSavings <= 0L) return emptyList()
         val perUnit = totalSavings / bundled.size
-        if (perUnit <= 0L) return emptyList()
 
         val countByLine = bundled.groupingBy { it.lineItemId }.eachCount()
         val priceByLine = bundled.groupingBy { it.lineItemId }
             .fold(0L) { acc, unit -> acc + unit.priceCents }
 
-        return countByLine.map { (lineId, count) ->
-            val amount = minOf(perUnit * count, priceByLine.getValue(lineId))
+        val amounts = linkedMapOf<String, Long>()
+        for ((lineId, count) in countByLine) {
+            amounts[lineId] = minOf(perUnit * count, priceByLine.getValue(lineId))
+        }
+        var leftover = totalSavings - amounts.values.sum()
+        for (lineId in amounts.keys) {
+            if (leftover <= 0L) break
+            val room = priceByLine.getValue(lineId) - amounts.getValue(lineId)
+            if (room <= 0L) continue
+            val extra = minOf(room, leftover)
+            amounts[lineId] = amounts.getValue(lineId) + extra
+            leftover -= extra
+        }
+
+        return amounts.mapNotNull { (lineId, amount) ->
+            if (amount <= 0L) return@mapNotNull null
             DesiredDiscount(
                 lineItemId = lineId,
-                name = PROMO_PREFIX + rule.name,
+                name = PROMO_PREFIX + rule.displayTitle(),
                 amountCents = -amount,
             )
         }
@@ -153,6 +371,10 @@ object PromoCalculator {
                     amountCents = group.sumOf { it.amountCents },
                 )
             }
+
+    private data class PlannedPack(val rule: PromoRule, val unitIndices: IntRange)
+
+    private data class PackPlan(val packs: List<PlannedPack>, val totalCost: Long)
 
     private data class UnitSlot(val lineItemId: String, val priceCents: Long)
 }

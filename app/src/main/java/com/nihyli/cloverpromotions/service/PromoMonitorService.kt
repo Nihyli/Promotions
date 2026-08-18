@@ -1,5 +1,6 @@
 package com.nihyli.cloverpromotions.service
 
+import android.accounts.Account
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -37,6 +38,7 @@ class PromoMonitorService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val receiver = PromoBroadcastReceiver()
     private var orderConnector: OrderConnector? = null
+    private var boundAccount: Account? = null
 
     private val orderListener = object : OrderV31Connector.OnOrderUpdateListener2 {
         override fun onOrderUpdated(orderId: String, selfChange: Boolean) {
@@ -60,7 +62,7 @@ class PromoMonitorService : Service() {
             discountIds: MutableList<String>,
         ) {}
         override fun onLineItemExchanged(orderId: String, oldLineItemId: String, newLineItemId: String) = recompute(orderId)
-        override fun onPaymentProcessed(orderId: String, paymentId: String) {}
+        override fun onPaymentProcessed(orderId: String, paymentId: String) = recompute(orderId)
         override fun onRefundProcessed(orderId: String, refundId: String) {}
         override fun onCreditProcessed(orderId: String, creditId: String) {}
     }
@@ -76,28 +78,44 @@ class PromoMonitorService : Service() {
             addAction(Intents.ACTION_ORDER_CREATED)
         }
         registerReceiver(receiver, filter)
-
-        val account = CloverAccount.getAccount(this)
-        if (account != null) {
-            orderConnector = OrderConnector(this, account, null).also { connector ->
-                connector.connect()
-                connector.addOnOrderChangedListener(orderListener)
-            }
-        } else {
-            Log.w(TAG, "No Clover account; order listener not attached")
-        }
+        attachOrderListener()
         Log.i(TAG, "Promo monitor started")
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        attachOrderListener()
+        return START_STICKY
+    }
+
+    private fun attachOrderListener() {
+        val account = CloverAccount.getAccount(this)
+        if (account == null) {
+            Log.w(TAG, "No Clover account yet; will retry when started again")
+            detachOrderListener()
+            return
+        }
+        if (orderConnector != null && account == boundAccount) return
+        // First attach, or the merchant changed: rebuild the connector.
+        detachOrderListener()
+        boundAccount = account
+        orderConnector = OrderConnector(this, account, null).also { connector ->
+            connector.connect()
+            connector.addOnOrderChangedListener(orderListener)
+        }
+    }
+
+    private fun detachOrderListener() {
+        orderConnector?.removeOnOrderChangedListener(orderListener)
+        orderConnector?.disconnect()
+        orderConnector = null
+        boundAccount = null
+    }
 
     override fun onDestroy() {
         try {
             unregisterReceiver(receiver)
         } catch (_: Exception) {}
-        orderConnector?.removeOnOrderChangedListener(orderListener)
-        orderConnector?.disconnect()
-        orderConnector = null
+        detachOrderListener()
         scope.cancel()
         super.onDestroy()
     }
