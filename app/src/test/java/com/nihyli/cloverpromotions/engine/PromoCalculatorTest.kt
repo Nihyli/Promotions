@@ -1,5 +1,6 @@
 package com.nihyli.cloverpromotions.engine
 
+import com.nihyli.cloverpromotions.data.PromoItemRef
 import com.nihyli.cloverpromotions.data.PromoRule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -12,16 +13,16 @@ class PromoCalculatorTest {
     private val fiveForFour = PromoRule(
         id = 1,
         name = "5 x Try 5 for $4.00",
-        itemId = try5,
-        itemName = "Try 5",
+        label = "Try 5",
+        items = listOf(PromoItemRef(try5, "Try 5")),
         requiredQty = 5,
         bundlePriceCents = 400,
     )
     private val tenForSeven = PromoRule(
         id = 2,
         name = "10 x Try 5 for $7.00",
-        itemId = try5,
-        itemName = "Try 5",
+        label = "Try 5",
+        items = listOf(PromoItemRef(try5, "Try 5")),
         requiredQty = 10,
         bundlePriceCents = 700,
     )
@@ -30,8 +31,20 @@ class PromoCalculatorTest {
     private val twoRedbullForFive = PromoRule(
         id = 3,
         name = "2 x Redbull for $5.00",
-        itemId = "item-rb",
-        itemName = "Redbull",
+        label = "Redbull",
+        items = listOf(PromoItemRef("item-rb", "Redbull")),
+        requiredQty = 2,
+        bundlePriceCents = 500,
+    )
+
+    // A multi-flavor promotion: red + blue Red Bull count toward the same deal.
+    private val redRb = "item-rb-red"
+    private val blueRb = "item-rb-blue"
+    private val redBullFlavors = PromoRule(
+        id = 4,
+        name = "2 x Red Bull for $5.00",
+        label = "Red Bull",
+        items = listOf(PromoItemRef(redRb, "Red Bull Red"), PromoItemRef(blueRb, "Red Bull Blue")),
         requiredQty = 2,
         bundlePriceCents = 500,
     )
@@ -39,12 +52,14 @@ class PromoCalculatorTest {
     private fun rb(id: String, priceCents: Long = 300, qty: Int = 1) =
         CartLine(id, "item-rb", "Redbull", priceCents, qty)
 
+    private fun flavor(lineId: String, itemId: String, name: String, priceCents: Long = 300, qty: Int = 1) =
+        CartLine(lineId, itemId, name, priceCents, qty)
+
     @Test
     fun tenUnitsUsesOnlyTheTenPack_notBothDeals() {
         val discounts = PromoCalculator.desiredDiscounts(rules, listOf(line(qty = 10)))
         assertEquals(1, discounts.size)
         assertEquals("PROMO: 10 x Try 5 for $7.00", discounts.single().name)
-        // 10 x $1.00 = $10.00, 10-for-$7 saves $3.00
         assertEquals(-300L, discounts.single().amountCents)
     }
 
@@ -88,16 +103,8 @@ class PromoCalculatorTest {
 
     @Test
     fun differentItemsCanEachGetTheirOwnPromo() {
-        val redbull = PromoRule(
-            id = 3,
-            name = "2 x Redbull for $5.00",
-            itemId = "item-rb",
-            itemName = "Redbull",
-            requiredQty = 2,
-            bundlePriceCents = 500,
-        )
         val discounts = PromoCalculator.desiredDiscounts(
-            rules + redbull,
+            rules + twoRedbullForFive,
             listOf(
                 line(qty = 10),
                 CartLine("li-rb", "item-rb", "Redbull", unitPriceCents = 300, quantity = 2),
@@ -163,20 +170,9 @@ class PromoCalculatorTest {
 
     @Test
     fun twoRedbullLinesGetMatchingDiscounts() {
-        val redbull = PromoRule(
-            id = 3,
-            name = "2 x Redbull for $5.00",
-            itemId = "item-rb",
-            itemName = "Redbull",
-            requiredQty = 2,
-            bundlePriceCents = 500,
-        )
         val discounts = PromoCalculator.desiredDiscounts(
-            listOf(redbull),
-            listOf(
-                CartLine("a", "item-rb", "Redbull", 300, 1),
-                CartLine("b", "item-rb", "Redbull", 300, 1),
-            ),
+            listOf(twoRedbullForFive),
+            listOf(rb("a"), rb("b")),
         )
         assertEquals(2, discounts.size)
         assertTrue(discounts.all { it.amountCents == -50L })
@@ -189,19 +185,109 @@ class PromoCalculatorTest {
         assertTrue(discounts.isEmpty())
     }
 
+    // ---- multiple items in one promotion ----
+
     @Test
-    fun oneRedbullHintsToAddOneMore() {
-        val redbull = PromoRule(
-            id = 3,
-            name = "2 x Redbull for $5.00",
-            itemId = "item-rb",
-            itemName = "Redbull",
+    fun mixedFlavorsCountTowardOnePromo() {
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(redBullFlavors),
+            listOf(
+                flavor("red", redRb, "Red Bull Red"),
+                flavor("blue", blueRb, "Red Bull Blue"),
+            ),
+        )
+        // 1 red + 1 blue = 2 units -> the 2-for-$5 promo fires.
+        assertEquals(2, discounts.size)
+        assertEquals(-100L, discounts.sumOf { it.amountCents })
+        assertTrue(discounts.all { it.name == "PROMO: 2 x Red Bull for $5.00" })
+        assertTrue(discounts.all { it.amountCents == -50L })
+    }
+
+    @Test
+    fun fiveMixedFlavorUnitsFillAFivePack() {
+        val fiveForFourFlavors = redBullFlavors.copy(
+            id = 5,
+            name = "5 x Red Bull for $4.00",
+            requiredQty = 5,
+            bundlePriceCents = 400,
+        )
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(fiveForFourFlavors),
+            listOf(
+                flavor("red", redRb, "Red Bull Red", priceCents = 100, qty = 3),
+                flavor("blue", blueRb, "Red Bull Blue", priceCents = 100, qty = 2),
+            ),
+        )
+        // 3 red + 2 blue = 5 units at $1.00 -> $5.00 retail, bundle $4.00.
+        assertEquals(-100L, discounts.sumOf { it.amountCents })
+        assertTrue(discounts.all { it.name == "PROMO: 5 x Red Bull for $4.00" })
+    }
+
+    @Test
+    fun separatePromosDoNotCrossCount() {
+        val redOnly = PromoRule(
+            id = 6,
+            name = "2 x Red Bull Red for $5.00",
+            label = "Red Bull Red",
+            items = listOf(PromoItemRef(redRb, "Red Bull Red")),
             requiredQty = 2,
             bundlePriceCents = 500,
         )
+        val blueOnly = PromoRule(
+            id = 7,
+            name = "2 x Red Bull Blue for $5.00",
+            label = "Red Bull Blue",
+            items = listOf(PromoItemRef(blueRb, "Red Bull Blue")),
+            requiredQty = 2,
+            bundlePriceCents = 500,
+        )
+        // 1 red + 1 blue: neither single-flavor promo reaches 2, so no deal.
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(redOnly, blueOnly),
+            listOf(
+                flavor("red", redRb, "Red Bull Red"),
+                flavor("blue", blueRb, "Red Bull Blue"),
+            ),
+        )
+        assertTrue(discounts.isEmpty())
+    }
+
+    @Test
+    fun overlappingItemIsClaimedByEarliestPromo() {
+        // Both promos include red; the earlier (lower id) one wins the units.
+        val groupPromo = redBullFlavors // id 4, {red, blue}
+        val redOnlyLater = PromoRule(
+            id = 8,
+            name = "2 x Red Bull Red for $4.00",
+            label = "Red Bull Red",
+            items = listOf(PromoItemRef(redRb, "Red Bull Red")),
+            requiredQty = 2,
+            bundlePriceCents = 400,
+        )
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(groupPromo, redOnlyLater),
+            listOf(flavor("red", redRb, "Red Bull Red", qty = 2)),
+        )
+        assertTrue(discounts.all { it.name == "PROMO: 2 x Red Bull for $5.00" })
+        assertEquals(-100L, discounts.sumOf { it.amountCents })
+    }
+
+    @Test
+    fun mixedFlavorNudgeUsesGroupLabel() {
         val nudges = PromoCalculator.desiredNudges(
-            listOf(redbull),
-            listOf(CartLine("a", "item-rb", "Redbull", 300, 1)),
+            listOf(redBullFlavors),
+            listOf(flavor("red", redRb, "Red Bull Red")),
+        )
+        assertEquals("Add 1 more Red Bull to get $1.00 off", nudges.single().message)
+    }
+
+    // ---- nudges / notes ----
+
+    @Test
+    fun oneRedbullHintsToAddOneMore() {
+        val nudges = PromoCalculator.desiredNudges(
+            listOf(twoRedbullForFive),
+            listOf(rb("a")),
         )
         assertEquals(1, nudges.size)
         assertEquals("Add 1 more Redbull to get $1.00 off", nudges.single().message)
@@ -222,30 +308,16 @@ class PromoCalculatorTest {
 
     @Test
     fun twoRedbullsShareEmptyNotesSoRegisterCanStack() {
-        val redbull = PromoRule(
-            id = 3,
-            name = "2 x Redbull for $5.00",
-            itemId = "item-rb",
-            itemName = "Redbull",
-            requiredQty = 2,
-            bundlePriceCents = 500,
-        )
         val notes = PromoCalculator.desiredNotes(
-            listOf(redbull),
-            listOf(
-                CartLine("a", "item-rb", "Redbull", 300, 1),
-                CartLine("b", "item-rb", "Redbull", 300, 1),
-            ),
+            listOf(twoRedbullForFive),
+            listOf(rb("a"), rb("b")),
         )
         assertEquals("", notes["a"])
         assertEquals("", notes["b"])
         assertTrue(
             PromoCalculator.desiredNudges(
-                listOf(redbull),
-                listOf(
-                    CartLine("a", "item-rb", "Redbull", 300, 1),
-                    CartLine("b", "item-rb", "Redbull", 300, 1),
-                ),
+                listOf(twoRedbullForFive),
+                listOf(rb("a"), rb("b")),
             ).isEmpty(),
         )
     }
@@ -293,7 +365,6 @@ class PromoCalculatorTest {
 
     @Test
     fun quantityFromUnitQtyTreatsSmallRawCountsAsUnits() {
-        // Fallback for callers that already pass a raw count (< 1000).
         assertEquals(3, PromoCalculator.quantityFromUnitQty(3))
         assertEquals(999, PromoCalculator.quantityFromUnitQty(999))
     }
@@ -304,6 +375,13 @@ class PromoCalculatorTest {
     fun matchesByItemIdEvenWhenNameDiffers() {
         val line = CartLine("li", "item-try5", "Different Name", 100, 5)
         assertTrue(PromoCalculator.matches(line, fiveForFour))
+    }
+
+    @Test
+    fun matchesAnyItemInAMultiItemPromo() {
+        assertTrue(PromoCalculator.matches(flavor("l", redRb, "Red Bull Red"), redBullFlavors))
+        assertTrue(PromoCalculator.matches(flavor("l", blueRb, "Red Bull Blue"), redBullFlavors))
+        assertTrue(!PromoCalculator.matches(flavor("l", "item-other", "Monster"), redBullFlavors))
     }
 
     @Test
@@ -332,6 +410,12 @@ class PromoCalculatorTest {
     }
 
     @Test
+    fun ruleWithNoItemsIsIgnored() {
+        val empty = fiveForFour.copy(items = emptyList())
+        assertTrue(PromoCalculator.desiredDiscounts(listOf(empty), listOf(line(qty = 5))).isEmpty())
+    }
+
+    @Test
     fun zeroQuantityLineIsIgnored() {
         val discounts = PromoCalculator.desiredDiscounts(rules, listOf(line(qty = 0)))
         assertTrue(discounts.isEmpty())
@@ -345,11 +429,9 @@ class PromoCalculatorTest {
 
     @Test
     fun ruleRequiringOneUnitIsIgnored() {
-        val single = PromoRule(
+        val single = fiveForFour.copy(
             id = 9,
             name = "1 x Try 5 for $0.50",
-            itemId = try5,
-            itemName = "Try 5",
             requiredQty = 1,
             bundlePriceCents = 50,
         )
@@ -386,7 +468,6 @@ class PromoCalculatorTest {
     fun threeRedbullsDiscountTwoAndHintForTheLeftover() {
         val lines = listOf(rb("a"), rb("b"), rb("c"))
         val discounts = PromoCalculator.desiredDiscounts(listOf(twoRedbullForFive), lines)
-        // One 2-pack applies; the third stays at retail.
         assertEquals(-100L, discounts.sumOf { it.amountCents })
         assertEquals(-50L, discounts.single { it.lineItemId == "a" }.amountCents)
         assertEquals(-50L, discounts.single { it.lineItemId == "b" }.amountCents)
@@ -398,11 +479,8 @@ class PromoCalculatorTest {
         assertEquals("Add 1 more Redbull to get $1.00 off", notes["c"])
     }
 
-    // ---- nudge / note edge cases ----
-
     @Test
     fun notesSplitBetweenPackedAndLeftoverLines() {
-        // 5 on line "a" completes the 5-pack; 1 on line "b" is the leftover.
         val notes = PromoCalculator.desiredNotes(
             rules,
             listOf(line(id = "a", qty = 5), line(id = "b", qty = 1)),

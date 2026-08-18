@@ -9,7 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -25,6 +25,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -33,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nihyli.cloverpromotions.data.PromoItemRef
 import com.nihyli.cloverpromotions.data.PromoRule
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,6 +58,7 @@ fun RulesScreen(viewModel: MainViewModel) {
                 Text("No promotions yet", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "Tap + to create one, e.g. \u201c2 x Red Bull for $5.00\u201d. " +
+                        "Add every flavor/SKU that should count together. " +
                         "Active promotions apply automatically in Register as items are scanned.",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 8.dp),
@@ -80,8 +83,9 @@ fun RulesScreen(viewModel: MainViewModel) {
                         headlineContent = { Text(rule.name) },
                         supportingContent = {
                             Text(
-                                "${rule.requiredQty} x ${rule.itemName} for " +
-                                    centsToDollars(rule.bundlePriceCents),
+                                "${rule.requiredQty} x ${rule.label} for " +
+                                    centsToDollars(rule.bundlePriceCents) +
+                                    "\n" + itemsSummary(rule.items),
                             )
                         },
                         leadingContent = {
@@ -120,6 +124,12 @@ fun RulesScreen(viewModel: MainViewModel) {
     }
 }
 
+private fun itemsSummary(items: List<PromoItemRef>): String = when {
+    items.isEmpty() -> "No items"
+    items.size == 1 -> items.first().name
+    else -> items.joinToString { it.name }
+}
+
 @Composable
 private fun RuleEditorDialog(
     viewModel: MainViewModel,
@@ -128,11 +138,12 @@ private fun RuleEditorDialog(
     onDismiss: () -> Unit,
     onSave: (PromoRule) -> Unit,
 ) {
-    var selectedItem by remember {
-        mutableStateOf(
-            existing?.let { PickerItem(it.itemId, it.itemName, 0L) },
-        )
+    val selectedItems = remember {
+        mutableStateListOf<PickerItem>().apply {
+            existing?.items?.forEach { add(PickerItem(it.id, it.name, 0L)) }
+        }
     }
+    var labelText by remember { mutableStateOf(existing?.label ?: "") }
     var qtyText by remember { mutableStateOf(existing?.requiredQty?.toString() ?: "2") }
     var priceText by remember {
         mutableStateOf(
@@ -143,17 +154,23 @@ private fun RuleEditorDialog(
 
     val qty = qtyText.toIntOrNull()
     val priceCents = dollarsToCents(priceText)
-    val valid = selectedItem != null && qty != null && qty >= 2 && priceCents != null && priceCents > 0
+    val effectiveLabel = labelText.ifBlank { selectedItems.firstOrNull()?.name ?: "" }
+    val valid = selectedItems.isNotEmpty() &&
+        effectiveLabel.isNotBlank() &&
+        qty != null && qty >= 2 &&
+        priceCents != null && priceCents > 0
 
     val autoName = if (valid) {
-        "$qty x ${selectedItem!!.name} for ${centsToDollars(priceCents!!)}"
+        "$qty x $effectiveLabel for ${centsToDollars(priceCents!!)}"
     } else {
         ""
     }
-    val overlap = existingRules.filter {
-        it.active &&
-            it.itemId == selectedItem?.id &&
-            it.id != (existing?.id ?: 0L)
+
+    val selectedIds = selectedItems.map { it.id }.toSet()
+    val overlap = existingRules.filter { other ->
+        other.active &&
+            other.id != (existing?.id ?: 0L) &&
+            other.items.any { it.id in selectedIds }
     }
 
     AlertDialog(
@@ -166,11 +183,29 @@ private fun RuleEditorDialog(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
-                        selectedItem?.name ?: "Choose item\u2026",
-                        maxLines = 1,
+                        if (selectedItems.isEmpty()) {
+                            "Choose items\u2026"
+                        } else {
+                            selectedItems.joinToString { it.name }
+                        },
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                Text(
+                    "Add every flavor/SKU that should count toward this deal together.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    value = labelText,
+                    onValueChange = { labelText = it },
+                    label = { Text("Promotion name (e.g. Red Bull)") },
+                    placeholder = {
+                        Text(selectedItems.firstOrNull()?.name ?: "Red Bull")
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 OutlinedTextField(
                     value = qtyText,
                     onValueChange = { qtyText = it },
@@ -193,10 +228,10 @@ private fun RuleEditorDialog(
                 }
                 if (overlap.isNotEmpty()) {
                     Text(
-                        "This item already has ${overlap.joinToString { it.name }}. " +
-                            "Register mixes them without overlapping: 5 gets the 5-pack, 10 gets the 10-pack, 15 gets both.",
+                        "Some of these items are already in ${overlap.joinToString { it.name }}. " +
+                            "An item counts toward only one promotion — the earliest one wins, so remove it there first.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary,
+                        color = MaterialTheme.colorScheme.error,
                     )
                 }
             }
@@ -209,8 +244,8 @@ private fun RuleEditorDialog(
                         PromoRule(
                             id = existing?.id ?: 0,
                             name = autoName,
-                            itemId = selectedItem!!.id,
-                            itemName = selectedItem!!.name,
+                            label = effectiveLabel,
+                            items = selectedItems.map { PromoItemRef(it.id, it.name) },
                             requiredQty = qty!!,
                             bundlePriceCents = priceCents!!,
                             active = existing?.active ?: true,
@@ -225,9 +260,11 @@ private fun RuleEditorDialog(
     if (showItemPicker) {
         ItemPickerDialog(
             viewModel = viewModel,
+            initiallySelected = selectedItems.toList(),
             onDismiss = { showItemPicker = false },
-            onSelect = {
-                selectedItem = it
+            onConfirm = { chosen ->
+                selectedItems.clear()
+                selectedItems.addAll(chosen)
                 showItemPicker = false
             },
         )
@@ -237,12 +274,16 @@ private fun RuleEditorDialog(
 @Composable
 private fun ItemPickerDialog(
     viewModel: MainViewModel,
+    initiallySelected: List<PickerItem>,
     onDismiss: () -> Unit,
-    onSelect: (PickerItem) -> Unit,
+    onConfirm: (List<PickerItem>) -> Unit,
 ) {
     var allItems by remember { mutableStateOf<List<PickerItem>?>(null) }
     var query by remember { mutableStateOf("") }
     val inventoryError by viewModel.inventoryError.collectAsStateWithLifecycle()
+    val chosen = remember {
+        mutableStateListOf<PickerItem>().apply { addAll(initiallySelected) }
+    }
 
     LaunchedEffect(Unit) {
         allItems = viewModel.loadInventory()
@@ -254,7 +295,7 @@ private fun ItemPickerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Choose inventory item") },
+        title = { Text("Choose items (${chosen.size} selected)") },
         text = {
             Column {
                 OutlinedTextField(
@@ -270,29 +311,40 @@ private fun ItemPickerDialog(
                     filtered.isEmpty() -> Text("No items found", Modifier.padding(top = 16.dp))
                     else -> LazyColumn(Modifier.heightIn(max = 400.dp).padding(top = 8.dp)) {
                         items(filtered, key = { it.id }) { item ->
+                            val isChecked = chosen.any { it.id == item.id }
                             Row(
                                 Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                TextButton(
-                                    onClick = { onSelect(item) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Text(
-                                        "${item.name}  (${centsToDollars(item.priceCents)})",
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
+                                Checkbox(
+                                    checked = isChecked,
+                                    onCheckedChange = { checked ->
+                                        if (checked) {
+                                            if (chosen.none { it.id == item.id }) chosen.add(item)
+                                        } else {
+                                            chosen.removeAll { it.id == item.id }
+                                        }
+                                    },
+                                )
+                                Text(
+                                    "${item.name}  (${centsToDollars(item.priceCents)})",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
                         }
                     }
                 }
             }
         },
-        confirmButton = {},
+        confirmButton = {
+            TextButton(
+                enabled = chosen.isNotEmpty(),
+                onClick = { onConfirm(chosen.toList()) },
+            ) { Text("Done") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
