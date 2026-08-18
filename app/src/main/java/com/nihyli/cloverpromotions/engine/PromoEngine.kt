@@ -6,7 +6,6 @@ import com.clover.sdk.util.CloverAccount
 import com.clover.sdk.v3.order.Discount
 import com.clover.sdk.v3.order.OrderConnector
 import com.nihyli.cloverpromotions.data.PromoDatabase
-import com.nihyli.cloverpromotions.data.PromoRule
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -20,12 +19,10 @@ import kotlinx.coroutines.sync.withLock
  */
 object PromoEngine {
     private const val TAG = "PromoEngine"
-    const val PROMO_PREFIX = "PROMO: "
+    const val PROMO_PREFIX = PromoCalculator.PROMO_PREFIX
 
     /** Serializes recomputes so rapid scans don't interleave. */
     private val mutex = Mutex()
-
-    private data class DesiredDiscount(val lineItemId: String, val name: String, val amountCents: Long)
 
     suspend fun recompute(context: Context, orderId: String): Unit = mutex.withLock {
         val account = CloverAccount.getAccount(context)
@@ -54,11 +51,27 @@ object PromoEngine {
                 TAG,
                 "Recompute $orderId: ${lineItems.size} line(s), ${rules.size} active rule(s). " +
                     lineItems.joinToString { li ->
-                        "${li.name} id=${li.item?.id} qty=${unitCount(li)} price=${li.price}"
+                        "${li.name} id=${li.item?.id} qty=${PromoCalculator.quantityFromUnitQty(li.unitQty)} price=${li.price}"
                     },
             )
 
-            val desired = computeDesiredDiscounts(rules, lineItems)
+            val lines = lineItems.mapNotNull { li ->
+                val id = li.id ?: return@mapNotNull null
+                val price = li.price ?: return@mapNotNull null
+                CartLine(
+                    lineItemId = id,
+                    itemId = li.item?.id,
+                    itemName = li.name,
+                    unitPriceCents = price,
+                    quantity = PromoCalculator.quantityFromUnitQty(li.unitQty),
+                )
+            }
+            val desired = PromoCalculator.desiredDiscounts(rules, lines)
+            Log.i(
+                TAG,
+                "Desired discounts: " +
+                    desired.joinToString { "${it.name} ${it.amountCents}c on ${it.lineItemId}" },
+            )
             val desiredByLine = desired.groupBy { it.lineItemId }
 
             for (lineItem in lineItems) {
@@ -91,68 +104,6 @@ object PromoEngine {
         }
     }
 
-    /**
-     * For each rule, expand line items by Register quantity (Clover often
-     * combines 2 scans into one line with unitQty=2000) and group units into
-     * bundles of [PromoRule.requiredQty]. Savings for a bundle land on the last
-     * line item that contributed a unit, so 2 x $3.00 for $5.00 shows -$1.00.
-     */
-    private fun computeDesiredDiscounts(
-        rules: List<PromoRule>,
-        lineItems: List<com.clover.sdk.v3.order.LineItem>,
-    ): List<DesiredDiscount> {
-        val desired = mutableListOf<DesiredDiscount>()
-        for (rule in rules) {
-            if (rule.requiredQty < 2) continue
-            val matching = lineItems
-                .filter { matches(it, rule) && it.price != null }
-                .sortedBy { it.id }
-
-            val units = matching.flatMap { li ->
-                List(unitCount(li)) { UnitSlot(li.id, li.price ?: 0L) }
-            }
-            val bundleCount = units.size / rule.requiredQty
-            Log.i(
-                TAG,
-                "Rule '${rule.name}' matched ${units.size} unit(s) across ${matching.size} line(s) → $bundleCount bundle(s)",
-            )
-            val savingsByLine = linkedMapOf<String, Long>()
-            for (bundle in 0 until bundleCount) {
-                val bundleUnits = units.subList(
-                    bundle * rule.requiredQty,
-                    (bundle + 1) * rule.requiredQty,
-                )
-                val savings = bundleUnits.sumOf { it.priceCents } - rule.bundlePriceCents
-                if (savings <= 0) continue
-                val lineId = bundleUnits.last().lineItemId
-                savingsByLine[lineId] = (savingsByLine[lineId] ?: 0L) + savings
-            }
-            for ((lineId, savings) in savingsByLine) {
-                desired += DesiredDiscount(
-                    lineItemId = lineId,
-                    name = PROMO_PREFIX + rule.name,
-                    amountCents = -savings,
-                )
-            }
-        }
-        return desired
-    }
-
-    private fun matches(lineItem: com.clover.sdk.v3.order.LineItem, rule: PromoRule): Boolean {
-        val itemId = lineItem.item?.id
-        if (!itemId.isNullOrBlank() && itemId == rule.itemId) return true
-        val name = lineItem.name ?: return false
-        return name.equals(rule.itemName, ignoreCase = true)
-    }
-
-    /** Clover stores quantity in thousandths (2 items → 2000). */
-    private fun unitCount(lineItem: com.clover.sdk.v3.order.LineItem): Int {
-        val qty = lineItem.unitQty ?: return 1
-        if (qty <= 0L) return 1
-        if (qty < 1000L) return qty.toInt()
-        return (qty / 1000L).toInt().coerceAtLeast(1)
-    }
-
     private fun waitUntilConnected(connector: OrderConnector, timeoutMs: Long = 5_000): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (!connector.isConnected && System.currentTimeMillis() < deadline) {
@@ -164,6 +115,4 @@ object PromoEngine {
         }
         return connector.isConnected
     }
-
-    private data class UnitSlot(val lineItemId: String, val priceCents: Long)
 }

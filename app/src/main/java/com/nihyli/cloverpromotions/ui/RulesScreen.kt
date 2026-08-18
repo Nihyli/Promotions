@@ -105,6 +105,7 @@ fun RulesScreen(viewModel: MainViewModel) {
         RuleEditorDialog(
             viewModel = viewModel,
             existing = editing,
+            existingRules = rules,
             onDismiss = { showEditor = false },
             onSave = { rule ->
                 viewModel.save(rule)
@@ -118,6 +119,7 @@ fun RulesScreen(viewModel: MainViewModel) {
 private fun RuleEditorDialog(
     viewModel: MainViewModel,
     existing: PromoRule?,
+    existingRules: List<PromoRule>,
     onDismiss: () -> Unit,
     onSave: (PromoRule) -> Unit,
 ) {
@@ -142,6 +144,11 @@ private fun RuleEditorDialog(
         "$qty x ${selectedItem!!.name} for ${centsToDollars(priceCents!!)}"
     } else {
         ""
+    }
+    val overlap = existingRules.filter {
+        it.active &&
+            it.itemId == selectedItem?.id &&
+            it.id != (existing?.id ?: 0L)
     }
 
     AlertDialog(
@@ -177,6 +184,14 @@ private fun RuleEditorDialog(
                     Text(
                         "Will show on receipts as: PROMO: $autoName",
                         style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                if (overlap.isNotEmpty()) {
+                    Text(
+                        "This item already has ${overlap.joinToString { it.name }}. " +
+                            "Register will use only the better deal for the cart quantity — they will not stack.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary,
                     )
                 }
             }
