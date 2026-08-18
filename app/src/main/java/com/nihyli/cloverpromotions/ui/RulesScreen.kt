@@ -1,5 +1,9 @@
 package com.nihyli.cloverpromotions.ui
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,17 +27,24 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.clover.sdk.v3.scanner.BarcodeResult
 import com.nihyli.cloverpromotions.data.PromoItemRef
 import com.nihyli.cloverpromotions.data.PromoRule
 
@@ -289,8 +300,10 @@ private fun ItemPickerDialog(
         allItems = viewModel.loadInventory()
     }
 
-    val filtered = allItems.orEmpty().filter {
-        query.isBlank() || it.name.contains(query, ignoreCase = true)
+    val filtered = allItems.orEmpty().filter { it.matchesQuery(query) }
+
+    BarcodeScanEffect { scanned ->
+        query = scanned
     }
 
     AlertDialog(
@@ -301,9 +314,15 @@ private fun ItemPickerDialog(
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
-                    label = { Text("Search") },
+                    label = { Text("Search name, SKU, or barcode") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Scan a barcode to find the item.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
                 when {
                     allItems == null -> Text("Loading inventory\u2026", Modifier.padding(top = 16.dp))
@@ -329,7 +348,7 @@ private fun ItemPickerDialog(
                                     },
                                 )
                                 Text(
-                                    "${item.name}  (${centsToDollars(item.priceCents)})",
+                                    itemLabel(item),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
@@ -348,3 +367,42 @@ private fun ItemPickerDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
+
+@Composable
+private fun itemLabel(item: PickerItem) = buildAnnotatedString {
+    append("${item.name}  (${centsToDollars(item.priceCents)})")
+    val skuText = when {
+        item.sku.isNotBlank() -> "sku: ${item.sku}"
+        item.barcode.isNotBlank() -> "barcode: ${item.barcode}"
+        else -> ""
+    }
+    if (skuText.isNotBlank()) {
+        append("  ")
+        withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+            append(skuText)
+        }
+    }
+}
+
+/** While the item picker is open, a Clover hardware/USB/camera scan fills the search box. */
+@Composable
+private fun BarcodeScanEffect(onScan: (String) -> Unit) {
+    val context = LocalContext.current
+    val latest = rememberUpdatedState(onScan)
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, intent: Intent?) {
+                val data = intent ?: return
+                val result = BarcodeResult(data)
+                if (!result.isBarcodeAction) return
+                val code = result.barcode?.trim().orEmpty()
+                if (code.isNotEmpty()) latest.value(code)
+            }
+        }
+        context.registerReceiver(receiver, IntentFilter(BarcodeResult.INTENT_ACTION))
+        onDispose {
+            runCatching { context.unregisterReceiver(receiver) }
+        }
+    }
+}
+
