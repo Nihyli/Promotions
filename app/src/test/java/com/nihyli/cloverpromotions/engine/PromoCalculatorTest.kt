@@ -45,12 +45,27 @@ class PromoCalculatorTest {
     }
 
     @Test
-    fun fifteenUnitsDoesNotStackBothDeals() {
+    fun fifteenUnitsUsesTenPackPlusLeftoverFivePack() {
         val discounts = PromoCalculator.desiredDiscounts(rules, listOf(line(qty = 15)))
-        assertEquals(1, discounts.size)
-        // Same $3 savings either way at $1/unit; prefer the deal that covers more units (3x5).
-        assertEquals("PROMO: 5 x Try 5 for $4.00", discounts.single().name)
-        assertEquals(-300L, discounts.single().amountCents)
+        val byName = discounts.groupBy { it.name }
+        assertEquals(setOf("PROMO: 10 x Try 5 for $7.00", "PROMO: 5 x Try 5 for $4.00"), byName.keys)
+        assertEquals(-300L, byName.getValue("PROMO: 10 x Try 5 for $7.00").sumOf { it.amountCents })
+        assertEquals(-100L, byName.getValue("PROMO: 5 x Try 5 for $4.00").sumOf { it.amountCents })
+        assertEquals(-400L, discounts.sumOf { it.amountCents })
+    }
+
+    @Test
+    fun twelveUnitsUsesTenPackNotTwoFivePacks() {
+        val discounts = PromoCalculator.desiredDiscounts(rules, listOf(line(qty = 12)))
+        assertEquals(listOf("PROMO: 10 x Try 5 for $7.00"), discounts.map { it.name }.distinct())
+        assertEquals(-300L, discounts.sumOf { it.amountCents })
+    }
+
+    @Test
+    fun twentyUnitsUsesTwoTenPacks() {
+        val discounts = PromoCalculator.desiredDiscounts(rules, listOf(line(qty = 20)))
+        assertEquals(listOf("PROMO: 10 x Try 5 for $7.00"), discounts.map { it.name }.distinct())
+        assertEquals(-600L, discounts.sumOf { it.amountCents })
     }
 
     @Test

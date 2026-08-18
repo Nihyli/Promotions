@@ -189,7 +189,7 @@ private fun RuleEditorDialog(
                 if (overlap.isNotEmpty()) {
                     Text(
                         "This item already has ${overlap.joinToString { it.name }}. " +
-                            "Register will use only the better deal for the cart quantity — they will not stack.",
+                            "Register mixes them without overlapping: 5 gets the 5-pack, 10 gets the 10-pack, 15 gets both.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary,
                     )

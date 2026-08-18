@@ -20,12 +20,13 @@ data class DesiredDiscount(
 /**
  * Picks promotion discounts for a cart.
  *
- * Multiple rules for the same item do **not** stack. For each item we evaluate
- * every matching rule on the full quantity and keep only the single best deal
- * (highest savings). Leftover units ring at regular price.
+ * Multiple rules for the same item do not overlap on the same unit. For each
+ * item we pick the cheapest mix of packs (5-for-$4, 10-for-$7, leftover at
+ * regular price). Example: 5 → $4 deal, 10 → $7 deal, 15 → $7 + $4.
  */
 object PromoCalculator {
     const val PROMO_PREFIX = "PROMO: "
+    private const val INF = Long.MAX_VALUE / 4
 
     fun desiredDiscounts(rules: List<PromoRule>, lines: List<CartLine>): List<DesiredDiscount> {
         val usableRules = rules.filter { it.active && it.requiredQty >= 2 }
@@ -39,21 +40,9 @@ object PromoCalculator {
                 List(line.quantity) { UnitSlot(line.lineItemId, line.unitPriceCents) }
             }
             if (units.isEmpty()) continue
-
-            val winner = itemRules
-                .mapNotNull { evaluate(it, units) }
-                .maxWithOrNull(
-                    compareBy<RuleEval>(
-                        { it.totalSavings },
-                        { -it.leftover },
-                        { it.requiredQty },
-                    ),
-                )
-                ?: continue
-
-            desired += winner.discounts
+            desired += allocatePacks(itemRules, units)
         }
-        return desired
+        return mergeByLineAndName(desired)
     }
 
     fun matches(line: CartLine, rule: PromoRule): Boolean {
@@ -71,41 +60,66 @@ object PromoCalculator {
         return (qty / 1000L).toInt().coerceAtLeast(1)
     }
 
-    private fun evaluate(rule: PromoRule, units: List<UnitSlot>): RuleEval? {
-        val bundleCount = units.size / rule.requiredQty
-        if (bundleCount == 0) return null
+    /**
+     * Cheapest way to ring [units] using the item's packs, then leftover at
+     * regular price. Packs never cover the same unit twice.
+     */
+    private fun allocatePacks(itemRules: List<PromoRule>, units: List<UnitSlot>): List<DesiredDiscount> {
+        val n = units.size
+        val cost = LongArray(n + 1) { INF }
+        val prev = IntArray(n + 1) { -1 }
+        val used = arrayOfNulls<PromoRule>(n + 1)
+        cost[0] = 0L
 
-        var totalSavings = 0L
-        val bundled = mutableListOf<UnitSlot>()
-        for (bundle in 0 until bundleCount) {
-            val bundleUnits = units.subList(
-                bundle * rule.requiredQty,
-                (bundle + 1) * rule.requiredQty,
-            )
-            val savings = bundleUnits.sumOf { it.priceCents } - rule.bundlePriceCents
-            if (savings <= 0) continue
-            totalSavings += savings
-            bundled += bundleUnits
+        for (k in 1..n) {
+            cost[k] = cost[k - 1] + units[k - 1].priceCents
+            prev[k] = k - 1
+            used[k] = null
+            for (rule in itemRules) {
+                val qty = rule.requiredQty
+                if (k < qty) continue
+                val candidate = cost[k - qty] + rule.bundlePriceCents
+                val better = candidate < cost[k] ||
+                    (candidate == cost[k] && used[k] == null) ||
+                    (candidate == cost[k] && (used[k]?.requiredQty ?: 0) < qty)
+                if (better) {
+                    cost[k] = candidate
+                    prev[k] = k - qty
+                    used[k] = rule
+                }
+            }
         }
-        if (totalSavings <= 0 || bundled.isEmpty()) return null
 
-        val discounts = evenDiscounts(rule, bundled, totalSavings)
-        if (discounts.isEmpty()) return null
+        val packs = mutableListOf<PromoRule>()
+        var k = n
+        while (k > 0) {
+            val rule = used[k]
+            if (rule != null) {
+                packs += rule
+                k = prev[k]
+            } else {
+                k -= 1
+            }
+        }
+        if (packs.isEmpty()) return emptyList()
 
-        return RuleEval(
-            requiredQty = rule.requiredQty,
-            leftover = units.size - bundleCount * rule.requiredQty,
-            totalSavings = totalSavings,
-            discounts = discounts,
-        )
+        packs.sortByDescending { it.requiredQty }
+        val discounts = mutableListOf<DesiredDiscount>()
+        var idx = 0
+        for (rule in packs) {
+            val slice = units.subList(idx, idx + rule.requiredQty).toList()
+            idx += rule.requiredQty
+            val savings = slice.sumOf { it.priceCents } - rule.bundlePriceCents
+            if (savings <= 0) continue
+            discounts += evenDiscounts(rule, slice, savings)
+        }
+        return discounts
     }
 
     /**
      * Register stacks identical lines (same item + same discount) into one
-     * "x10" row. A discount on only some of those lines splits the stack
-     * (x7 + x3). Give every bundled unit the same per-unit amount so they
-     * stay on one row with the promo underneath, and never exceed a line's
-     * price so Clover actually takes the money off.
+     * "x10" row. Give every unit in a pack the same per-unit amount so that
+     * pack stays on one row, and never exceed a line's price.
      */
     private fun evenDiscounts(
         rule: PromoRule,
@@ -129,12 +143,16 @@ object PromoCalculator {
         }
     }
 
-    private data class UnitSlot(val lineItemId: String, val priceCents: Long)
+    private fun mergeByLineAndName(discounts: List<DesiredDiscount>): List<DesiredDiscount> =
+        discounts
+            .groupBy { it.lineItemId to it.name }
+            .map { (key, group) ->
+                DesiredDiscount(
+                    lineItemId = key.first,
+                    name = key.second,
+                    amountCents = group.sumOf { it.amountCents },
+                )
+            }
 
-    private data class RuleEval(
-        val requiredQty: Int,
-        val leftover: Int,
-        val totalSavings: Long,
-        val discounts: List<DesiredDiscount>,
-    )
+    private data class UnitSlot(val lineItemId: String, val priceCents: Long)
 }
