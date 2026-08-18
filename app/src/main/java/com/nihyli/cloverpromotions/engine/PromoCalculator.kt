@@ -31,11 +31,11 @@ data class PromoNudge(
  *
  * A promotion can cover several inventory items (e.g. drink flavors/SKUs); units
  * of any of them count together toward that promotion's packs. Rules that share
- * the exact same set of items form a "family" and their packs mix without
- * overlapping on the same unit (5-for-$4, 10-for-$7, leftover at regular price;
- * 15 → $7 + $4). Families are independent: a unit is claimed by the
- * earliest-created promotion whose items include it, so different promotions
- * never count the same unit.
+ * the exact same set of items *and* the same [PromoKind] form a "family" and
+ * their packs mix without overlapping on the same unit (5-for-$4, 10-for-$7,
+ * leftover at regular price; 15 → $7 + $4). Families are independent: a unit is
+ * claimed by the earliest-created promotion whose items include it, so different
+ * promotions never count the same unit.
  */
 object PromoCalculator {
     const val PROMO_PREFIX = "PROMO: "
@@ -117,7 +117,7 @@ object PromoCalculator {
     }
 
     /**
-     * Groups active, in-effect rules into families keyed by their exact item set,
+     * Groups active, in-effect rules into families keyed by item set + kind,
      * then walks families in creation order. Each line is claimed by the first
      * family whose items include it, so overlapping promotions never double-count.
      */
@@ -128,8 +128,8 @@ object PromoCalculator {
         block: (familyRules: List<PromoRule>, matching: List<CartLine>, units: List<UnitSlot>) -> Unit,
     ) {
         val families = rules
-            .filter { it.active && it.requiredQty >= 2 && it.items.isNotEmpty() && it.isInEffect(now) }
-            .groupBy { rule -> rule.items.map { it.id }.toSortedSet() }
+            .filter { it.active && it.packSize() >= 2 && it.items.isNotEmpty() && it.isInEffect(now) }
+            .groupBy { rule -> rule.items.map { it.id }.toSortedSet() to rule.kind }
             .values
             .sortedBy { group -> group.minOf { it.id } }
 
@@ -193,9 +193,9 @@ object PromoCalculator {
     }
 
     /**
-     * Fixed-price bundles keep the original DP (5/10/15 mixing). Track-savings
-     * packs have a cost that depends on which units are in the pack, so those
-     * families are filled greedily from the expensive end.
+     * Fixed-price bundles keep the original DP (5/10/15 mixing). Percent, BOGO,
+     * and track-savings packs have a cost that depends on which units are in the
+     * pack, so those families are filled greedily from the expensive end.
      */
     private fun planPacks(familyRules: List<PromoRule>, units: List<UnitSlot>): PackPlan {
         val raw = if (familyRules.all { it.usesFixedBundleDp() }) {
@@ -301,10 +301,20 @@ object PromoCalculator {
     private fun packSavings(rule: PromoRule, slice: List<UnitSlot>): Long {
         if (slice.size < rule.packSize()) return 0L
         val retail = slice.sumOf { it.priceCents }
-        val savings = when (rule.bundlePriceMode) {
-            BundlePriceMode.FIXED_PRICE -> retail - rule.bundlePriceCents
-            BundlePriceMode.TRACK_SAVINGS -> {
-                if (retail <= rule.savingsCents) 0L else rule.savingsCents
+        val savings = when (rule.kind) {
+            PromoKind.BUNDLE -> when (rule.bundlePriceMode) {
+                BundlePriceMode.FIXED_PRICE -> retail - rule.bundlePriceCents
+                BundlePriceMode.TRACK_SAVINGS -> {
+                    if (retail <= rule.savingsCents) 0L else rule.savingsCents
+                }
+            }
+            PromoKind.PERCENT_OFF -> {
+                if (rule.percentOff !in 1..100) 0L
+                else (retail * rule.percentOff.toLong()) / 100L
+            }
+            PromoKind.BUY_X_GET_Y -> {
+                if (rule.buyQty < 1 || rule.getQty < 1) 0L
+                else slice.sortedBy { it.priceCents }.take(rule.getQty).sumOf { it.priceCents }
             }
         }
         return savings.coerceAtLeast(0L)

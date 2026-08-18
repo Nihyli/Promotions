@@ -54,6 +54,8 @@ class PromoRuleTest {
         assertTrue(looksLikeFullPromoTitle("3 x Candy for $3.00"))
         assertTrue(looksLikeFullPromoTitle("3 for 3 Candy"))
         assertTrue(looksLikeFullPromoTitle("2 x Red Bull"))
+        assertTrue(looksLikeFullPromoTitle("2 x Candy, 20% off"))
+        assertTrue(looksLikeFullPromoTitle("Buy 1 get 1 Candy"))
         assertTrue(!looksLikeFullPromoTitle("Red Bull"))
         assertTrue(!looksLikeFullPromoTitle("Candy"))
     }
@@ -70,6 +72,34 @@ class PromoRuleTest {
             savingsCents = 50,
         )
         assertEquals("3 x Candy, $0.50 off", rule.displayTitle())
+    }
+
+    @Test
+    fun percentAndBogoTitles() {
+        val percent = PromoRule(
+            name = "",
+            label = "Candy",
+            items = listOf(PromoItemRef("c", "Candy")),
+            requiredQty = 2,
+            bundlePriceCents = 0,
+            kind = PromoKind.PERCENT_OFF,
+            percentOff = 20,
+        )
+        assertEquals("2 x Candy, 20% off", percent.displayTitle())
+
+        val bogo = PromoRule(
+            name = "",
+            label = "Candy",
+            items = listOf(PromoItemRef("c", "Candy")),
+            requiredQty = 2,
+            bundlePriceCents = 0,
+            kind = PromoKind.BUY_X_GET_Y,
+            buyQty = 1,
+            getQty = 1,
+        )
+        assertEquals("Buy 1 get 1 Candy", bogo.displayTitle())
+        val b2g1 = bogo.copy(buyQty = 2, getQty = 1, requiredQty = 3)
+        assertEquals("Buy 2 get 1 Candy", b2g1.displayTitle())
     }
 
     @Test

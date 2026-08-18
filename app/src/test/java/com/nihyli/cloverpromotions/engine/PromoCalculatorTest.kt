@@ -2,6 +2,7 @@ package com.nihyli.cloverpromotions.engine
 
 import com.nihyli.cloverpromotions.data.BundlePriceMode
 import com.nihyli.cloverpromotions.data.PromoItemRef
+import com.nihyli.cloverpromotions.data.PromoKind
 import com.nihyli.cloverpromotions.data.PromoRule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -670,6 +671,117 @@ class PromoCalculatorTest {
         )
         val cart = listOf(CartLine("a", "item-candy", "Candy", unitPriceCents = 200, quantity = 3))
         assertEquals(-200L, PromoCalculator.desiredDiscounts(listOf(fixed), cart).sumOf { it.amountCents })
+    }
+
+    // ---- percent off ----
+
+    @Test
+    fun percentOffTwoUnitsTakesTwentyPercent() {
+        val percent = PromoRule(
+            id = 40,
+            name = "2 x Candy, 20% off",
+            label = "Candy",
+            items = listOf(PromoItemRef("item-candy", "Candy")),
+            requiredQty = 2,
+            bundlePriceCents = 0,
+            kind = PromoKind.PERCENT_OFF,
+            percentOff = 20,
+        )
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(percent),
+            listOf(CartLine("a", "item-candy", "Candy", unitPriceCents = 300, quantity = 2)),
+        )
+        assertEquals(-120L, discounts.sumOf { it.amountCents })
+        assertTrue(discounts.all { it.name == "PROMO: 2 x Candy, 20% off" })
+    }
+
+    @Test
+    fun percentOffHintsWhenBelowMinQty() {
+        val percent = PromoRule(
+            id = 41,
+            name = "2 x Candy, 20% off",
+            label = "Candy",
+            items = listOf(PromoItemRef("item-candy", "Candy")),
+            requiredQty = 2,
+            bundlePriceCents = 0,
+            kind = PromoKind.PERCENT_OFF,
+            percentOff = 20,
+        )
+        val lines = listOf(CartLine("a", "item-candy", "Candy", unitPriceCents = 300, quantity = 1))
+        assertTrue(PromoCalculator.desiredDiscounts(listOf(percent), lines).isEmpty())
+        assertEquals(
+            "Add 1 more Candy to get $1.20 off",
+            PromoCalculator.desiredNudges(listOf(percent), lines).single().message,
+        )
+    }
+
+    // ---- buy X get Y ----
+
+    @Test
+    fun buyOneGetOneTwoEqualUnitsMakesTheSecondFree() {
+        val bogo = PromoRule(
+            id = 50,
+            name = "Buy 1 get 1 Candy",
+            label = "Candy",
+            items = listOf(PromoItemRef("item-candy", "Candy")),
+            requiredQty = 2,
+            bundlePriceCents = 0,
+            kind = PromoKind.BUY_X_GET_Y,
+            buyQty = 1,
+            getQty = 1,
+        )
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(bogo),
+            listOf(CartLine("a", "item-candy", "Candy", unitPriceCents = 300, quantity = 2)),
+        )
+        assertEquals(-300L, discounts.sumOf { it.amountCents })
+    }
+
+    @Test
+    fun buyOneGetOneFreesTheCheapestUnit() {
+        val bogo = PromoRule(
+            id = 51,
+            name = "Buy 1 get 1 Candy",
+            label = "Candy",
+            items = listOf(PromoItemRef("item-candy", "Candy")),
+            requiredQty = 2,
+            bundlePriceCents = 0,
+            kind = PromoKind.BUY_X_GET_Y,
+            buyQty = 1,
+            getQty = 1,
+        )
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(bogo),
+            listOf(
+                CartLine("dear", "item-candy", "Candy", unitPriceCents = 500, quantity = 1),
+                CartLine("cheap", "item-candy", "Candy", unitPriceCents = 100, quantity = 1),
+            ),
+        )
+        assertEquals(-100L, discounts.sumOf { it.amountCents })
+    }
+
+    @Test
+    fun buyTwoGetOneFreesTheCheapestOfThree() {
+        val b2g1 = PromoRule(
+            id = 52,
+            name = "Buy 2 get 1 Candy",
+            label = "Candy",
+            items = listOf(PromoItemRef("item-candy", "Candy")),
+            requiredQty = 3,
+            bundlePriceCents = 0,
+            kind = PromoKind.BUY_X_GET_Y,
+            buyQty = 2,
+            getQty = 1,
+        )
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(b2g1),
+            listOf(
+                CartLine("a", "item-candy", "Candy", unitPriceCents = 300, quantity = 1),
+                CartLine("b", "item-candy", "Candy", unitPriceCents = 200, quantity = 1),
+                CartLine("c", "item-candy", "Candy", unitPriceCents = 100, quantity = 1),
+            ),
+        )
+        assertEquals(-100L, discounts.sumOf { it.amountCents })
     }
 
     private fun at(year: Int, month: Int, day: Int, hour: Int, minute: Int): Calendar =

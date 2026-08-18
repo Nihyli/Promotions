@@ -5,10 +5,7 @@ import androidx.room.PrimaryKey
 import java.util.Calendar
 import java.util.Locale
 
-/**
- * How a promotion computes its discount.
- * Stored in Room v3; only [BUNDLE] is used until later commits.
- */
+/** How a promotion computes its discount. */
 enum class PromoKind { BUNDLE, PERCENT_OFF, BUY_X_GET_Y }
 
 /**
@@ -39,8 +36,7 @@ fun snapshotPackRetail(prices: List<Long>, qty: Int): Long {
 }
 
 /**
- * A quantity bundle promotion. Buy [requiredQty] units drawn from any of the
- * promotion's [items] and the bundle rings up at [bundlePriceCents] total.
+ * A promotion: a quantity bundle, a percent off a pack, or buy-X-get-Y.
  *
  * Multiple items (e.g. different flavors/SKUs of the same drink) can share one
  * promotion, and units of any of them count together toward the same deal:
@@ -49,8 +45,6 @@ fun snapshotPackRetail(prices: List<Long>, qty: Int): Long {
  *
  * [label] is the shared display name for the group (e.g. "Red Bull") used in the
  * promotion name and cashier hints.
- *
- * Extra v3 columns (kind, percent/buy-get) stay at defaults until a later commit.
  */
 @Entity(tableName = "promo_rules")
 data class PromoRule(
@@ -74,7 +68,7 @@ data class PromoRule(
 ) {
     /**
      * Short group name for titles and hints (e.g. "Candy", "Red Bull").
-     * Ignores a stored label that already looks like a full “3 x … for $…” title.
+     * Ignores a stored label that already looks like a full promo title.
      */
     fun groupDisplayName(): String {
         val fromItems = items.firstOrNull()?.name.orEmpty()
@@ -86,7 +80,10 @@ data class PromoRule(
     }
 
     /** Units that make one pack of this deal. */
-    fun packSize(): Int = requiredQty
+    fun packSize(): Int = when (kind) {
+        PromoKind.BUNDLE, PromoKind.PERCENT_OFF -> requiredQty
+        PromoKind.BUY_X_GET_Y -> buyQty + getQty
+    }
 
     /** Snapshot retail of one pack, using prices stored on [items]. */
     fun snapshotPackRetail(): Long = snapshotPackRetail(items.map { it.priceCents }, packSize().coerceAtLeast(requiredQty))
@@ -94,10 +91,14 @@ data class PromoRule(
     /** Title shown in the list and on receipts. */
     fun displayTitle(): String {
         val group = groupDisplayName()
-        return if (bundlePriceMode == BundlePriceMode.TRACK_SAVINGS && savingsCents > 0) {
-            "$requiredQty x $group, ${formatMoney(savingsCents)} off"
-        } else {
-            "$requiredQty x $group for ${formatMoney(bundlePriceCents)}"
+        return when (kind) {
+            PromoKind.BUNDLE -> if (bundlePriceMode == BundlePriceMode.TRACK_SAVINGS && savingsCents > 0) {
+                "$requiredQty x $group, ${formatMoney(savingsCents)} off"
+            } else {
+                "$requiredQty x $group for ${formatMoney(bundlePriceCents)}"
+            }
+            PromoKind.PERCENT_OFF -> "$requiredQty x $group, $percentOff% off"
+            PromoKind.BUY_X_GET_Y -> "Buy $buyQty get $getQty $group"
         }
     }
 
@@ -160,6 +161,8 @@ fun looksLikeFullPromoTitle(text: String): Boolean {
     if (value.contains(" for $", ignoreCase = true)) return true
     if (value.contains(" for ", ignoreCase = true) && value.firstOrNull()?.isDigit() == true) return true
     if (Regex("""^\d+\s*x\s""", RegexOption.IGNORE_CASE).containsMatchIn(value)) return true
+    if (value.contains("% off", ignoreCase = true)) return true
+    if (Regex("""^Buy \d+\s+get \d+""", RegexOption.IGNORE_CASE).containsMatchIn(value)) return true
     return false
 }
 

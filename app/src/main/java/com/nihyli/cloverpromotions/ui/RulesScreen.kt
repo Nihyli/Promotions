@@ -54,6 +54,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.clover.sdk.v3.scanner.BarcodeResult
 import com.nihyli.cloverpromotions.data.BundlePriceMode
 import com.nihyli.cloverpromotions.data.PromoItemRef
+import com.nihyli.cloverpromotions.data.PromoKind
 import com.nihyli.cloverpromotions.data.PromoRule
 import com.nihyli.cloverpromotions.data.formatClockMinutes24
 import com.nihyli.cloverpromotions.data.parseClockMinutes
@@ -191,19 +192,31 @@ private fun RuleEditorDialog(
             existing?.items?.forEach { add(PickerItem(it.id, it.name, it.priceCents)) }
         }
     }
+    var kind by remember { mutableStateOf(existing?.kind ?: PromoKind.BUNDLE) }
     var labelText by remember { mutableStateOf(existing?.groupDisplayName().orEmpty()) }
     var qtyText by remember { mutableStateOf(existing?.requiredQty?.toString() ?: "2") }
     var priceText by remember {
         mutableStateOf(
-            existing?.let { String.format(java.util.Locale.US, "%.2f", it.bundlePriceCents / 100.0) } ?: "",
+            existing?.takeIf { it.kind == PromoKind.BUNDLE }
+                ?.let { String.format(java.util.Locale.US, "%.2f", it.bundlePriceCents / 100.0) }
+                ?: "",
         )
+    }
+    var percentText by remember {
+        mutableStateOf(existing?.percentOff?.takeIf { it > 0 }?.toString() ?: "20")
+    }
+    var buyText by remember {
+        mutableStateOf(existing?.buyQty?.takeIf { it > 0 }?.toString() ?: "1")
+    }
+    var getText by remember {
+        mutableStateOf(existing?.getQty?.takeIf { it > 0 }?.toString() ?: "1")
+    }
+    var maxUsesText by remember {
+        mutableStateOf(existing?.maxUsesPerOrder?.takeIf { it > 0 }?.toString() ?: "")
     }
     var daysMask by remember { mutableIntStateOf(existing?.daysOfWeek ?: PromoRule.ALL_DAYS) }
     var startText by remember { mutableStateOf(initialClockField(existing, start = true)) }
     var endText by remember { mutableStateOf(initialClockField(existing, start = false)) }
-    var maxUsesText by remember {
-        mutableStateOf(existing?.maxUsesPerOrder?.takeIf { it > 0 }?.toString() ?: "")
-    }
     var trackSavings by remember {
         mutableStateOf(
             existing == null || existing.bundlePriceMode == BundlePriceMode.TRACK_SAVINGS,
@@ -216,35 +229,22 @@ private fun RuleEditorDialog(
         liveItems = viewModel.loadInventory()
     }
 
-    val qty = qtyText.toIntOrNull()
-    val priceCents = dollarsToCents(priceText)
-    val effectiveLabel = labelText.ifBlank { selectedItems.firstOrNull()?.name ?: "" }
-    val times = editorTimes(startText, endText)
-    val maxUses = if (maxUsesText.isBlank()) {
-        0
-    } else {
-        maxUsesText.toIntOrNull()?.takeIf { it >= 0 }
-    }
-    val snap = qty?.let { snapshotPackRetail(selectedItems.map { item -> item.priceCents }, it) } ?: 0L
-    val savings = (snap - (priceCents ?: 0L)).coerceAtLeast(0L)
-    val valid = selectedItems.isNotEmpty() &&
-        effectiveLabel.isNotBlank() &&
-        qty != null && qty >= 2 &&
-        priceCents != null && priceCents > 0 &&
-        daysMask and PromoRule.ALL_DAYS != 0 &&
-        times != null &&
-        maxUses != null &&
-        (!trackSavings || savings > 0L)
-
-    val autoName = if (valid) {
-        if (trackSavings && savings > 0L) {
-            "$qty x $effectiveLabel, ${centsToDollars(savings)} off"
-        } else {
-            "$qty x $effectiveLabel for ${centsToDollars(priceCents!!)}"
-        }
-    } else {
-        ""
-    }
+    val draft = buildDraftRule(
+        existing = existing,
+        kind = kind,
+        selectedItems = selectedItems.toList(),
+        labelText = labelText,
+        qtyText = qtyText,
+        priceText = priceText,
+        percentText = percentText,
+        buyText = buyText,
+        getText = getText,
+        maxUsesText = maxUsesText,
+        daysMask = daysMask,
+        startText = startText,
+        endText = endText,
+        trackSavings = trackSavings,
+    )
 
     val selectedIds = selectedItems.map { it.id }.toSet()
     val overlap = existingRules.filter { other ->
@@ -296,30 +296,88 @@ private fun RuleEditorDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                OutlinedTextField(
-                    value = qtyText,
-                    onValueChange = { qtyText = it },
-                    label = { Text("Quantity required (min 2)") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = priceText,
-                    onValueChange = { priceText = it },
-                    label = { Text("Bundle price, e.g. 5.00") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "Keep this $ off if prices change",
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f).padding(end = 8.dp),
-                    )
-                    Switch(checked = trackSavings, onCheckedChange = { trackSavings = it })
+
+                Text("Deal type", style = MaterialTheme.typography.bodySmall)
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    KindChoice("Bundle price", kind == PromoKind.BUNDLE, Modifier.weight(1f)) {
+                        kind = PromoKind.BUNDLE
+                    }
+                    KindChoice("Percent off", kind == PromoKind.PERCENT_OFF, Modifier.weight(1f)) {
+                        kind = PromoKind.PERCENT_OFF
+                    }
+                    KindChoice("Buy X get Y", kind == PromoKind.BUY_X_GET_Y, Modifier.weight(1f)) {
+                        kind = PromoKind.BUY_X_GET_Y
+                    }
                 }
+
+                when (kind) {
+                    PromoKind.BUNDLE -> {
+                        OutlinedTextField(
+                            value = qtyText,
+                            onValueChange = { qtyText = it },
+                            label = { Text("Quantity required (min 2)") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = priceText,
+                            onValueChange = { priceText = it },
+                            label = { Text("Bundle price, e.g. 5.00") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Keep this $ off if prices change",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f).padding(end = 8.dp),
+                            )
+                            Switch(checked = trackSavings, onCheckedChange = { trackSavings = it })
+                        }
+                    }
+                    PromoKind.PERCENT_OFF -> {
+                        OutlinedTextField(
+                            value = qtyText,
+                            onValueChange = { qtyText = it },
+                            label = { Text("Quantity required (min 2)") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = percentText,
+                            onValueChange = { percentText = it },
+                            label = { Text("Percent off (1–100)") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    PromoKind.BUY_X_GET_Y -> {
+                        OutlinedTextField(
+                            value = buyText,
+                            onValueChange = { buyText = it },
+                            label = { Text("Buy quantity") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = getText,
+                            onValueChange = { getText = it },
+                            label = { Text("Get quantity (free)") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+
                 OutlinedTextField(
                     value = maxUsesText,
                     onValueChange = { maxUsesText = it },
@@ -355,27 +413,33 @@ private fun RuleEditorDialog(
                     )
                 }
 
-                if (autoName.isNotEmpty()) {
+                if (draft != null) {
                     Text(
-                        "Will show on receipts as: PROMO: $autoName",
+                        "Will show on receipts as: PROMO: ${draft.displayTitle()}",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
                 if (pricesDrifted) {
-                    val packQty = qty ?: 0
+                    val packQty = packQtyForKind(kind, qtyText, buyText, getText)
                     val savedPrices = selectedItems.map { it.priceCents }
                     val livePrices = selectedItems.map { sel -> liveById[sel.id]?.priceCents ?: sel.priceCents }
                     val savedOff = estimatedPackSavings(
+                        kind = kind,
                         trackSavings = trackSavings,
                         storedSavingsCents = existing?.savingsCents ?: 0L,
-                        bundlePriceCents = priceCents ?: 0L,
+                        bundlePriceCents = dollarsToCents(priceText) ?: 0L,
+                        percentOff = percentText.toIntOrNull() ?: 0,
+                        getQty = getText.toIntOrNull() ?: 0,
                         unitPrices = savedPrices,
                         packQty = packQty,
                     )
                     val liveOff = estimatedPackSavings(
+                        kind = kind,
                         trackSavings = trackSavings,
                         storedSavingsCents = existing?.savingsCents ?: 0L,
-                        bundlePriceCents = priceCents ?: 0L,
+                        bundlePriceCents = dollarsToCents(priceText) ?: 0L,
+                        percentOff = percentText.toIntOrNull() ?: 0,
+                        getQty = getText.toIntOrNull() ?: 0,
                         unitPrices = livePrices,
                         packQty = packQty,
                     )
@@ -404,31 +468,8 @@ private fun RuleEditorDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = valid,
-                onClick = {
-                    val window = times ?: return@TextButton
-                    onSave(
-                        PromoRule(
-                            id = existing?.id ?: 0,
-                            name = autoName,
-                            label = effectiveLabel,
-                            items = selectedItems.map { PromoItemRef(it.id, it.name, it.priceCents) },
-                            requiredQty = qty!!,
-                            bundlePriceCents = priceCents!!,
-                            active = existing?.active ?: true,
-                            maxUsesPerOrder = maxUses!!,
-                            daysOfWeek = daysMask,
-                            startMinute = window.first,
-                            endMinute = window.second,
-                            bundlePriceMode = if (trackSavings) {
-                                BundlePriceMode.TRACK_SAVINGS
-                            } else {
-                                BundlePriceMode.FIXED_PRICE
-                            },
-                            savingsCents = if (trackSavings) savings else 0L,
-                        ),
-                    )
-                },
+                enabled = draft != null,
+                onClick = { onSave(draft!!) },
             ) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
@@ -444,6 +485,20 @@ private fun RuleEditorDialog(
                 selectedItems.addAll(chosen)
                 showItemPicker = false
             },
+        )
+    }
+}
+
+@Composable
+private fun KindChoice(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    OutlinedButton(onClick = onClick, modifier = modifier, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)) {
+        Text(
+            label,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.labelSmall,
         )
     }
 }
@@ -614,21 +669,148 @@ private fun editorTimes(startText: String, endText: String): Pair<Int, Int>? {
     return start to end
 }
 
+private fun packQtyForKind(kind: PromoKind, qtyText: String, buyText: String, getText: String): Int =
+    when (kind) {
+        PromoKind.BUY_X_GET_Y -> (buyText.toIntOrNull() ?: 0) + (getText.toIntOrNull() ?: 0)
+        else -> qtyText.toIntOrNull() ?: 0
+    }
+
 private fun estimatedPackSavings(
+    kind: PromoKind,
     trackSavings: Boolean,
     storedSavingsCents: Long,
     bundlePriceCents: Long,
+    percentOff: Int,
+    getQty: Int,
     unitPrices: List<Long>,
     packQty: Int,
 ): Long {
     val packRetail = snapshotPackRetail(unitPrices, packQty)
-    return if (trackSavings) {
-        val off = storedSavingsCents.takeIf { it > 0 } ?: (packRetail - bundlePriceCents).coerceAtLeast(0L)
-        if (packRetail <= off) 0L else off
-    } else {
-        (packRetail - bundlePriceCents).coerceAtLeast(0L)
+    return when (kind) {
+        PromoKind.BUNDLE -> if (trackSavings) {
+            val off = storedSavingsCents.takeIf { it > 0 } ?: (packRetail - bundlePriceCents).coerceAtLeast(0L)
+            if (packRetail <= off) 0L else off
+        } else {
+            (packRetail - bundlePriceCents).coerceAtLeast(0L)
+        }
+        PromoKind.PERCENT_OFF -> (packRetail * percentOff.coerceIn(0, 100).toLong()) / 100L
+        PromoKind.BUY_X_GET_Y -> {
+            if (getQty < 1 || packQty < 2 || unitPrices.isEmpty()) 0L
+            else {
+                val packPrices = if (unitPrices.size == packQty) {
+                    unitPrices
+                } else {
+                    val avg = unitPrices.sum() / unitPrices.size
+                    List(packQty) { avg }
+                }
+                packPrices.sorted().take(getQty).sum()
+            }
+        }
     }
 }
 
+private fun buildDraftRule(
+    existing: PromoRule?,
+    kind: PromoKind,
+    selectedItems: List<PickerItem>,
+    labelText: String,
+    qtyText: String,
+    priceText: String,
+    percentText: String,
+    buyText: String,
+    getText: String,
+    maxUsesText: String,
+    daysMask: Int,
+    startText: String,
+    endText: String,
+    trackSavings: Boolean,
+): PromoRule? {
+    if (selectedItems.isEmpty()) return null
+    val effectiveLabel = labelText.ifBlank { selectedItems.firstOrNull()?.name.orEmpty() }
+    if (effectiveLabel.isBlank()) return null
+    if (daysMask and PromoRule.ALL_DAYS == 0) return null
+    val times = editorTimes(startText, endText) ?: return null
+    val maxUses = if (maxUsesText.isBlank()) {
+        0
+    } else {
+        maxUsesText.toIntOrNull()?.takeIf { it >= 0 } ?: return null
+    }
+    val refs = selectedItems.map { PromoItemRef(it.id, it.name, it.priceCents) }
+    val id = existing?.id ?: 0L
+    val active = existing?.active ?: true
 
-
+    val rule = when (kind) {
+        PromoKind.BUNDLE -> {
+            val qty = qtyText.toIntOrNull() ?: return null
+            if (qty < 2) return null
+            val price = dollarsToCents(priceText) ?: return null
+            if (price <= 0L) return null
+            val snap = snapshotPackRetail(selectedItems.map { it.priceCents }, qty)
+            val savings = (snap - price).coerceAtLeast(0L)
+            if (trackSavings && savings <= 0L) return null
+            PromoRule(
+                id = id,
+                name = "",
+                label = effectiveLabel,
+                items = refs,
+                requiredQty = qty,
+                bundlePriceCents = price,
+                active = active,
+                kind = PromoKind.BUNDLE,
+                maxUsesPerOrder = maxUses,
+                daysOfWeek = daysMask,
+                startMinute = times.first,
+                endMinute = times.second,
+                bundlePriceMode = if (trackSavings) {
+                    BundlePriceMode.TRACK_SAVINGS
+                } else {
+                    BundlePriceMode.FIXED_PRICE
+                },
+                savingsCents = if (trackSavings) savings else 0L,
+            )
+        }
+        PromoKind.PERCENT_OFF -> {
+            val qty = qtyText.toIntOrNull() ?: return null
+            if (qty < 2) return null
+            val percent = percentText.toIntOrNull() ?: return null
+            if (percent !in 1..100) return null
+            PromoRule(
+                id = id,
+                name = "",
+                label = effectiveLabel,
+                items = refs,
+                requiredQty = qty,
+                bundlePriceCents = 0L,
+                active = active,
+                kind = PromoKind.PERCENT_OFF,
+                percentOff = percent,
+                maxUsesPerOrder = maxUses,
+                daysOfWeek = daysMask,
+                startMinute = times.first,
+                endMinute = times.second,
+            )
+        }
+        PromoKind.BUY_X_GET_Y -> {
+            val buy = buyText.toIntOrNull() ?: return null
+            val get = getText.toIntOrNull() ?: return null
+            if (buy < 1 || get < 1) return null
+            PromoRule(
+                id = id,
+                name = "",
+                label = effectiveLabel,
+                items = refs,
+                requiredQty = buy + get,
+                bundlePriceCents = 0L,
+                active = active,
+                kind = PromoKind.BUY_X_GET_Y,
+                buyQty = buy,
+                getQty = get,
+                maxUsesPerOrder = maxUses,
+                daysOfWeek = daysMask,
+                startMinute = times.first,
+                endMinute = times.second,
+            )
+        }
+    }
+    return rule.copy(name = rule.displayTitle())
+}
