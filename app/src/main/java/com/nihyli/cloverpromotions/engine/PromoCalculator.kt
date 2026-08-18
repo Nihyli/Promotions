@@ -72,6 +72,31 @@ object PromoCalculator {
         return nudges
     }
 
+    /**
+     * Note to put on each matching line so Register can stack identical rows.
+     * Leftover units get the hint; packed units get "" (not null) so a cleared
+     * hint on the first Red Bull matches the second Red Bull.
+     */
+    fun desiredNotes(rules: List<PromoRule>, lines: List<CartLine>): Map<String, String> {
+        val notes = linkedMapOf<String, String>()
+        val usableRules = rules.filter { it.active && it.requiredQty >= 2 }
+        for ((_, itemRules) in usableRules.groupBy { it.itemId }) {
+            val matching = lines
+                .filter { line -> itemRules.any { matches(line, it) } && line.unitPriceCents >= 0 && line.quantity > 0 }
+                .sortedBy { it.lineItemId }
+            val units = matching.flatMap { line ->
+                List(line.quantity) { UnitSlot(line.lineItemId, line.unitPriceCents) }
+            }
+            if (units.isEmpty()) continue
+            val nudge = closestNudge(itemRules, units)
+            for (line in matching) {
+                notes[line.lineItemId] =
+                    if (nudge != null && line.lineItemId in nudge.lineItemIds) nudge.message else ""
+            }
+        }
+        return notes
+    }
+
     fun isHintNote(note: String?): Boolean {
         val text = note?.trim().orEmpty()
         return text.isNotEmpty() && hintNote.matches(text)
@@ -113,6 +138,10 @@ object PromoCalculator {
 
     private fun closestNudge(itemRules: List<PromoRule>, units: List<UnitSlot>): PromoNudge? {
         val current = planPacks(itemRules, units)
+        val packedQty = current.packs.sumOf { it.requiredQty }
+        val leftover = units.drop(packedQty)
+        if (leftover.isEmpty()) return null
+
         val unitPrice = units.last().priceCents
         val maxAdd = itemRules.maxOf { it.requiredQty }
         for (add in 1..maxAdd) {
@@ -120,15 +149,10 @@ object PromoCalculator {
             val newCost = planPacks(itemRules, units + extras).totalCost
             val savings = current.totalCost + add * unitPrice - newCost
             if (savings <= 0) continue
-            val packedQty = current.packs.sumOf { it.requiredQty }
-            val leftover = units.drop(packedQty)
-            val lineIds = (if (leftover.isNotEmpty()) leftover else units)
-                .map { it.lineItemId }
-                .toSet()
             val name = itemRules.first().itemName
             val more = if (add == 1) "1 more $name" else "$add more $name"
             return PromoNudge(
-                lineItemIds = lineIds,
+                lineItemIds = leftover.map { it.lineItemId }.toSet(),
                 message = "Add $more to get ${formatCents(savings)} off",
             )
         }

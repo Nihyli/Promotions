@@ -74,11 +74,10 @@ object PromoEngine {
             )
             val desiredByLine = desired.groupBy { it.lineItemId }
             val ringing = order.payments.isNullOrEmpty()
-            val noteByLine = linkedMapOf<String, String>()
-            if (ringing) {
-                for (nudge in PromoCalculator.desiredNudges(rules, lines)) {
-                    for (id in nudge.lineItemIds) noteByLine[id] = nudge.message
-                }
+            val noteByLine = if (ringing) {
+                PromoCalculator.desiredNotes(rules, lines)
+            } else {
+                emptyMap()
             }
 
             for (lineItem in lineItems) {
@@ -106,15 +105,16 @@ object PromoEngine {
 
                 val wantedNote = noteByLine[lineItem.id]
                 val currentNote = lineItem.note
-                when {
-                    wantedNote != null && currentNote != wantedNote -> {
-                        connector.setLineItemNote(orderId, lineItem.id, wantedNote)
-                        Log.i(TAG, "Hint on ${lineItem.id}: $wantedNote")
-                    }
-                    wantedNote == null && PromoCalculator.isHintNote(currentNote) -> {
-                        connector.setLineItemNote(orderId, lineItem.id, "")
-                        Log.i(TAG, "Cleared hint on ${lineItem.id}")
-                    }
+                if (!currentNote.isNullOrBlank() &&
+                    !PromoCalculator.isHintNote(currentNote) &&
+                    wantedNote.isNullOrEmpty()
+                ) {
+                    continue
+                }
+                val targetNote = wantedNote?.takeIf { it.isNotEmpty() }
+                if (currentNote != targetNote) {
+                    connector.setLineItemNote(orderId, lineItem.id, targetNote)
+                    Log.i(TAG, "Note on ${lineItem.id}: ${targetNote ?: "(none)"}")
                 }
             }
         } catch (e: Exception) {

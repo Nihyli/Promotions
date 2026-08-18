@@ -209,9 +209,40 @@ class PromoCalculatorTest {
     }
 
     @Test
-    fun tenTry5HintsToAddFiveForNextFivePack() {
-        val nudges = PromoCalculator.desiredNudges(rules, listOf(line(qty = 10)))
-        assertEquals("Add 5 more Try 5 to get $1.00 off", nudges.single().message)
+    fun twoRedbullsShareEmptyNotesSoRegisterCanStack() {
+        val redbull = PromoRule(
+            id = 3,
+            name = "2 x Redbull for $5.00",
+            itemId = "item-rb",
+            itemName = "Redbull",
+            requiredQty = 2,
+            bundlePriceCents = 500,
+        )
+        val notes = PromoCalculator.desiredNotes(
+            listOf(redbull),
+            listOf(
+                CartLine("a", "item-rb", "Redbull", 300, 1),
+                CartLine("b", "item-rb", "Redbull", 300, 1),
+            ),
+        )
+        assertEquals("", notes["a"])
+        assertEquals("", notes["b"])
+        assertTrue(
+            PromoCalculator.desiredNudges(
+                listOf(redbull),
+                listOf(
+                    CartLine("a", "item-rb", "Redbull", 300, 1),
+                    CartLine("b", "item-rb", "Redbull", 300, 1),
+                ),
+            ).isEmpty(),
+        )
+    }
+
+    @Test
+    fun completeTry5PacksHaveNoHint() {
+        assertTrue(PromoCalculator.desiredNudges(rules, listOf(line(qty = 5))).isEmpty())
+        assertTrue(PromoCalculator.desiredNudges(rules, listOf(line(qty = 10))).isEmpty())
+        assertTrue(PromoCalculator.desiredNudges(rules, listOf(line(qty = 15))).isEmpty())
     }
 
     @Test
