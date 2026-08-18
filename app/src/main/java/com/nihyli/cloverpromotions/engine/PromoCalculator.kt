@@ -75,13 +75,8 @@ object PromoCalculator {
         val bundleCount = units.size / rule.requiredQty
         if (bundleCount == 0) return null
 
-        val savingsByLine = linkedMapOf<String, Long>()
         var totalSavings = 0L
-        val remainingCapacity = units
-            .groupingBy { it.lineItemId }
-            .fold(0L) { acc, unit -> acc + unit.priceCents }
-            .toMutableMap()
-
+        val bundled = mutableListOf<UnitSlot>()
         for (bundle in 0 until bundleCount) {
             val bundleUnits = units.subList(
                 bundle * rule.requiredQty,
@@ -90,56 +85,48 @@ object PromoCalculator {
             val savings = bundleUnits.sumOf { it.priceCents } - rule.bundlePriceCents
             if (savings <= 0) continue
             totalSavings += savings
-            for ((lineId, take) in spreadSavings(bundleUnits, savings, remainingCapacity)) {
-                savingsByLine[lineId] = (savingsByLine[lineId] ?: 0L) + take
-            }
+            bundled += bundleUnits
         }
-        if (totalSavings <= 0 || savingsByLine.isEmpty()) return null
+        if (totalSavings <= 0 || bundled.isEmpty()) return null
+
+        val discounts = evenDiscounts(rule, bundled, totalSavings)
+        if (discounts.isEmpty()) return null
 
         return RuleEval(
             requiredQty = rule.requiredQty,
             leftover = units.size - bundleCount * rule.requiredQty,
             totalSavings = totalSavings,
-            discounts = savingsByLine.map { (lineId, savings) ->
-                DesiredDiscount(
-                    lineItemId = lineId,
-                    name = PROMO_PREFIX + rule.name,
-                    amountCents = -savings,
-                )
-            },
+            discounts = discounts,
         )
     }
 
     /**
-     * Clover will not take more off a line than that line's price, so a $3
-     * bundle discount parked on a $1 line only reduces the total by $1.
-     * Spread savings across the lines that actually make up the bundle.
+     * Register stacks identical lines (same item + same discount) into one
+     * "x10" row. A discount on only some of those lines splits the stack
+     * (x7 + x3). Give every bundled unit the same per-unit amount so they
+     * stay on one row with the promo underneath, and never exceed a line's
+     * price so Clover actually takes the money off.
      */
-    private fun spreadSavings(
-        bundleUnits: List<UnitSlot>,
-        savings: Long,
-        remainingCapacity: MutableMap<String, Long>,
-    ): Map<String, Long> {
-        val bundleCapacity = linkedMapOf<String, Long>()
-        for (unit in bundleUnits) {
-            bundleCapacity[unit.lineItemId] = (bundleCapacity[unit.lineItemId] ?: 0L) + unit.priceCents
+    private fun evenDiscounts(
+        rule: PromoRule,
+        bundled: List<UnitSlot>,
+        totalSavings: Long,
+    ): List<DesiredDiscount> {
+        val perUnit = totalSavings / bundled.size
+        if (perUnit <= 0L) return emptyList()
+
+        val countByLine = bundled.groupingBy { it.lineItemId }.eachCount()
+        val priceByLine = bundled.groupingBy { it.lineItemId }
+            .fold(0L) { acc, unit -> acc + unit.priceCents }
+
+        return countByLine.map { (lineId, count) ->
+            val amount = minOf(perUnit * count, priceByLine.getValue(lineId))
+            DesiredDiscount(
+                lineItemId = lineId,
+                name = PROMO_PREFIX + rule.name,
+                amountCents = -amount,
+            )
         }
-        val allocated = linkedMapOf<String, Long>()
-        var remaining = savings
-        val lineOrder = bundleCapacity.entries.sortedWith(
-            compareByDescending<Map.Entry<String, Long>> { minOf(it.value, remainingCapacity[it.key] ?: 0L) }
-                .thenBy { it.key },
-        )
-        for ((lineId, _) in lineOrder) {
-            if (remaining <= 0) break
-            val room = minOf(bundleCapacity[lineId] ?: 0L, remainingCapacity[lineId] ?: 0L)
-            val take = minOf(remaining, room)
-            if (take <= 0) continue
-            allocated[lineId] = take
-            remainingCapacity[lineId] = (remainingCapacity[lineId] ?: 0L) - take
-            remaining -= take
-        }
-        return allocated
     }
 
     private data class UnitSlot(val lineItemId: String, val priceCents: Long)

@@ -107,10 +107,8 @@ class PromoCalculatorTest {
                 line(id = "b", qty = 4),
             ),
         )
-        assertEquals(1, discounts.size)
-        assertEquals("PROMO: 10 x Try 5 for $7.00", discounts.single().name)
-        assertEquals("a", discounts.single().lineItemId)
-        assertEquals(-300L, discounts.single().amountCents)
+        assertEquals("PROMO: 10 x Try 5 for $7.00", discounts.distinctBy { it.name }.single().name)
+        assertEquals(-300L, discounts.sumOf { it.amountCents })
     }
 
     @Test
@@ -123,17 +121,38 @@ class PromoCalculatorTest {
             ),
         )
         assertEquals(-300L, discounts.sumOf { it.amountCents })
-        assertEquals(-300L, discounts.single { it.lineItemId == "nine" }.amountCents)
-        assertTrue(discounts.none { it.lineItemId == "one" })
+        assertEquals(-270L, discounts.single { it.lineItemId == "nine" }.amountCents)
+        assertEquals(-30L, discounts.single { it.lineItemId == "one" }.amountCents)
     }
 
     @Test
-    fun tenSeparateDollarLinesSpreadDiscountWithoutExceedingLinePrice() {
+    fun tenSeparateDollarLinesGetTheSameDiscountSoRegisterCanStackThem() {
         val lines = (1..10).map { line(id = "l$it", qty = 1) }
         val discounts = PromoCalculator.desiredDiscounts(listOf(tenForSeven), lines)
+        assertEquals(10, discounts.size)
+        assertTrue(discounts.all { it.amountCents == -30L })
         assertEquals(-300L, discounts.sumOf { it.amountCents })
-        assertTrue(discounts.all { -it.amountCents <= 100L })
-        assertEquals(3, discounts.size)
+    }
+
+    @Test
+    fun twoRedbullLinesGetMatchingDiscounts() {
+        val redbull = PromoRule(
+            id = 3,
+            name = "2 x Redbull for $5.00",
+            itemId = "item-rb",
+            itemName = "Redbull",
+            requiredQty = 2,
+            bundlePriceCents = 500,
+        )
+        val discounts = PromoCalculator.desiredDiscounts(
+            listOf(redbull),
+            listOf(
+                CartLine("a", "item-rb", "Redbull", 300, 1),
+                CartLine("b", "item-rb", "Redbull", 300, 1),
+            ),
+        )
+        assertEquals(2, discounts.size)
+        assertTrue(discounts.all { it.amountCents == -50L })
     }
 
     @Test
