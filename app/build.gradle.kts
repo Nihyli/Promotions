@@ -11,6 +11,9 @@ val keystoreProperties = Properties().apply {
     val file = rootProject.file("keystore.properties")
     if (file.exists()) load(file.inputStream())
 }
+val releaseStorePath = keystoreProperties.getProperty("storeFile")
+val hasReleaseKeystore = !releaseStorePath.isNullOrBlank() &&
+    rootProject.file(releaseStorePath).isFile
 
 android {
     namespace = "com.nihyli.cloverpromotions"
@@ -36,15 +39,17 @@ android {
             enableV3Signing = false
             enableV4Signing = false
         }
-        create("release") {
-            storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
-            storePassword = keystoreProperties.getProperty("storePassword")
-            keyAlias = keystoreProperties.getProperty("keyAlias")
-            keyPassword = keystoreProperties.getProperty("keyPassword")
-            enableV1Signing = true
-            enableV2Signing = false
-            enableV3Signing = false
-            enableV4Signing = false
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = rootProject.file(releaseStorePath)
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                enableV1Signing = true
+                enableV2Signing = false
+                enableV3Signing = false
+                enableV4Signing = false
+            }
         }
     }
 
@@ -52,7 +57,9 @@ android {
         release {
             isMinifyEnabled = false
             isDebuggable = false
-            signingConfig = signingConfigs.getByName("release")
+            if (hasReleaseKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
