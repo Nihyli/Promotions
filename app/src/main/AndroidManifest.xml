@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Required by CloverAccount.getAccount() on older Clover devices -->
+    <uses-permission
+        android:name="android.permission.GET_ACCOUNTS"
+        android:maxSdkVersion="27" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Clover fires these broadcasts as the Register cart changes.
+             Manifest registration means we get woken up even if not running. -->
+        <receiver
+            android:name=".receiver.PromoBroadcastReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.clover.intent.action.LINE_ITEM_ADDED" />
+                <action android:name="com.clover.intent.action.LINE_ITEM_DELETED" />
+                <action android:name="com.clover.intent.action.ORDER_CREATED" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>
