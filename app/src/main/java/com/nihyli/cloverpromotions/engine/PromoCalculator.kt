@@ -1,6 +1,9 @@
 package com.nihyli.cloverpromotions.engine
 
+import com.nihyli.cloverpromotions.data.BundlePriceMode
+import com.nihyli.cloverpromotions.data.PromoKind
 import com.nihyli.cloverpromotions.data.PromoRule
+import com.nihyli.cloverpromotions.data.formatMoney
 import java.util.Calendar
 
 /** One scanned unit of an item on the order (Register may combine many onto one line). */
@@ -174,7 +177,7 @@ object PromoCalculator {
 
         val unitPrice = units.last().priceCents
         val label = familyRules.minByOrNull { it.id }?.groupDisplayName().orEmpty()
-        val maxAdd = familyRules.maxOf { it.requiredQty }
+        val maxAdd = familyRules.maxOf { it.packSize() }
         for (add in 1..maxAdd) {
             val extras = List(add) { UnitSlot(units.last().lineItemId, unitPrice) }
             val newCost = planPacks(familyRules, units + extras).totalCost
@@ -183,17 +186,29 @@ object PromoCalculator {
             val more = if (add == 1) "1 more $label" else "$add more $label"
             return PromoNudge(
                 lineItemIds = leftover.map { it.lineItemId }.toSet(),
-                message = "Add $more to get ${formatCents(savings)} off",
+                message = "Add $more to get ${formatMoney(savings)} off",
             )
         }
         return null
     }
 
+    /**
+     * Fixed-price bundles keep the original DP (5/10/15 mixing). Track-savings
+     * packs have a cost that depends on which units are in the pack, so those
+     * families are filled greedily from the expensive end.
+     */
     private fun planPacks(familyRules: List<PromoRule>, units: List<UnitSlot>): PackPlan {
-        val raw = planPacksDp(familyRules, units)
+        val raw = if (familyRules.all { it.usesFixedBundleDp() }) {
+            planPacksDp(familyRules, units)
+        } else {
+            planPacksGreedy(familyRules, units)
+        }
         val packs = limitMaxUses(raw.packs, units)
         return PackPlan(packs, customerCost(units, packs))
     }
+
+    private fun PromoRule.usesFixedBundleDp(): Boolean =
+        kind == PromoKind.BUNDLE && bundlePriceMode == BundlePriceMode.FIXED_PRICE
 
     private fun planPacksDp(familyRules: List<PromoRule>, units: List<UnitSlot>): PackPlan {
         val n = units.size
@@ -234,6 +249,34 @@ object PromoCalculator {
         return PackPlan(packs, cost[n])
     }
 
+    private fun planPacksGreedy(familyRules: List<PromoRule>, units: List<UnitSlot>): PackPlan {
+        val packs = mutableListOf<PlannedPack>()
+        var offset = 0
+        val n = units.size
+        while (offset < n) {
+            var bestRule: PromoRule? = null
+            var bestSavings = 0L
+            for (rule in familyRules) {
+                val size = rule.packSize()
+                if (size < 2 || offset + size > n) continue
+                val slice = units.subList(offset, offset + size)
+                val savings = packSavings(rule, slice)
+                if (savings <= 0L) continue
+                val better = savings > bestSavings ||
+                    (savings == bestSavings && size > (bestRule?.packSize() ?: 0))
+                if (better) {
+                    bestSavings = savings
+                    bestRule = rule
+                }
+            }
+            val chosen = bestRule ?: break
+            val size = chosen.packSize()
+            packs += PlannedPack(chosen, offset until (offset + size))
+            offset += size
+        }
+        return PackPlan(packs, customerCost(units, packs))
+    }
+
     /** Keep the packs that save the customer the most, up to each rule's cap. */
     private fun limitMaxUses(packs: List<PlannedPack>, units: List<UnitSlot>): List<PlannedPack> {
         if (packs.none { it.rule.maxUsesPerOrder > 0 }) return packs
@@ -256,12 +299,16 @@ object PromoCalculator {
     }
 
     private fun packSavings(rule: PromoRule, slice: List<UnitSlot>): Long {
-        if (slice.size < rule.requiredQty) return 0L
-        return (slice.sumOf { it.priceCents } - rule.bundlePriceCents).coerceAtLeast(0L)
+        if (slice.size < rule.packSize()) return 0L
+        val retail = slice.sumOf { it.priceCents }
+        val savings = when (rule.bundlePriceMode) {
+            BundlePriceMode.FIXED_PRICE -> retail - rule.bundlePriceCents
+            BundlePriceMode.TRACK_SAVINGS -> {
+                if (retail <= rule.savingsCents) 0L else rule.savingsCents
+            }
+        }
+        return savings.coerceAtLeast(0L)
     }
-
-    private fun formatCents(cents: Long): String =
-        java.lang.String.format(java.util.Locale.US, "$%.2f", cents / 100.0)
 
     /**
      * Register stacks identical lines (same item + same discount) into one

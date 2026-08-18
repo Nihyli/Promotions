@@ -1,5 +1,6 @@
 package com.nihyli.cloverpromotions.engine
 
+import com.nihyli.cloverpromotions.data.BundlePriceMode
 import com.nihyli.cloverpromotions.data.PromoItemRef
 import com.nihyli.cloverpromotions.data.PromoRule
 import org.junit.Assert.assertEquals
@@ -635,6 +636,40 @@ class PromoCalculatorTest {
         val discounts = PromoCalculator.desiredDiscounts(listOf(capped), lines)
         assertEquals(-100L, discounts.sumOf { it.amountCents })
         assertTrue(PromoCalculator.desiredNudges(listOf(capped), lines).isEmpty())
+    }
+
+    // ---- bundle price tracking ----
+
+    @Test
+    fun trackSavingsKeepsOriginalDollarOffWhenRetailRises() {
+        val track = PromoRule(
+            id = 30,
+            name = "3 x Candy, $0.50 off",
+            label = "Candy",
+            items = listOf(PromoItemRef("item-candy", "Candy", priceCents = 150)),
+            requiredQty = 3,
+            bundlePriceCents = 400,
+            bundlePriceMode = BundlePriceMode.TRACK_SAVINGS,
+            savingsCents = 50,
+        )
+        val cart = listOf(CartLine("a", "item-candy", "Candy", unitPriceCents = 200, quantity = 3))
+        assertEquals(-50L, PromoCalculator.desiredDiscounts(listOf(track), cart).sumOf { it.amountCents })
+    }
+
+    @Test
+    fun fixedPriceBundleGrowsSavingsWhenRetailRises() {
+        val fixed = PromoRule(
+            id = 31,
+            name = "3 x Candy for $4.00",
+            label = "Candy",
+            items = listOf(PromoItemRef("item-candy", "Candy", priceCents = 150)),
+            requiredQty = 3,
+            bundlePriceCents = 400,
+            bundlePriceMode = BundlePriceMode.FIXED_PRICE,
+            savingsCents = 50,
+        )
+        val cart = listOf(CartLine("a", "item-candy", "Candy", unitPriceCents = 200, quantity = 3))
+        assertEquals(-200L, PromoCalculator.desiredDiscounts(listOf(fixed), cart).sumOf { it.amountCents })
     }
 
     private fun at(year: Int, month: Int, day: Int, hour: Int, minute: Int): Calendar =

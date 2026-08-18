@@ -67,10 +67,9 @@ abstract class PromoDatabase : RoomDatabase() {
         }
 
         /**
-         * v3 adds schedule columns used now, plus promo kind, percent, buy/get,
-         * max uses, and savings tracking for later features. Extra columns stay
-         * inert (BUNDLE + FIXED_PRICE, unlimited uses) so later commits don't
-         * need another schema bump. Item JSON is left as-is.
+         * v3 adds promo kind, schedule, max uses, and savings tracking.
+         * Existing rows stay BUNDLE + FIXED_PRICE so live ring prices do not change.
+         * Item JSON is left as-is; missing `priceCents` parses as 0.
          */
         private val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {

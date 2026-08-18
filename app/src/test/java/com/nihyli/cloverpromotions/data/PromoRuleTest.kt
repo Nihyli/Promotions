@@ -59,6 +59,27 @@ class PromoRuleTest {
     }
 
     @Test
+    fun trackSavingsTitleShowsAmountOff() {
+        val rule = PromoRule(
+            name = "",
+            label = "Candy",
+            items = listOf(PromoItemRef("c", "Candy", 150)),
+            requiredQty = 3,
+            bundlePriceCents = 400,
+            bundlePriceMode = BundlePriceMode.TRACK_SAVINGS,
+            savingsCents = 50,
+        )
+        assertEquals("3 x Candy, $0.50 off", rule.displayTitle())
+    }
+
+    @Test
+    fun snapshotPackRetailSumsWhenQtyMatchesSelection() {
+        val prices = listOf(150L, 200L)
+        assertEquals(350L, snapshotPackRetail(prices, 2))
+        assertEquals(525L, snapshotPackRetail(prices, 3)) // 3 * avg 175
+    }
+
+    @Test
     fun weekendScheduleSkipsWednesday() {
         val rule = PromoRule(
             name = "2 x Drink for $5.00",

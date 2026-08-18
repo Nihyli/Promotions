@@ -13,12 +13,30 @@ enum class PromoKind { BUNDLE, PERCENT_OFF, BUY_X_GET_Y }
 
 /**
  * How a [PromoKind.BUNDLE] deal reacts when inventory prices change.
- * Migrated rows stay [FIXED_PRICE]. TRACK_SAVINGS is inert until a later commit.
+ * Migrated rows stay [FIXED_PRICE] (absolute ring price). New deals default
+ * to [TRACK_SAVINGS] in the editor so the original dollar-off is kept.
  */
 enum class BundlePriceMode { FIXED_PRICE, TRACK_SAVINGS }
 
 /** One inventory item that belongs to a promotion (e.g. a single Red Bull flavor/SKU). */
-data class PromoItemRef(val id: String, val name: String)
+data class PromoItemRef(
+    val id: String,
+    val name: String,
+    /** Unit price in cents at the time the merchant saved the deal. Missing in v2 JSON → 0. */
+    val priceCents: Long = 0,
+)
+
+/**
+ * Snapshot retail of a pack of [qty] units from [prices].
+ *
+ * If [qty] equals the number of selected items, prices are summed (one of each).
+ * Otherwise `qty * average(prices)` using integer division.
+ */
+fun snapshotPackRetail(prices: List<Long>, qty: Int): Long {
+    if (prices.isEmpty() || qty <= 0) return 0L
+    val sum = prices.sum()
+    return if (qty == prices.size) sum else sum * qty / prices.size
+}
 
 /**
  * A quantity bundle promotion. Buy [requiredQty] units drawn from any of the
@@ -32,8 +50,7 @@ data class PromoItemRef(val id: String, val name: String)
  * [label] is the shared display name for the group (e.g. "Red Bull") used in the
  * promotion name and cashier hints.
  *
- * Extra v3 columns (kind, percent/buy-get, max uses, savings) are stored now so
- * later features don't need another schema bump; they stay at defaults here.
+ * Extra v3 columns (kind, percent/buy-get) stay at defaults until a later commit.
  */
 @Entity(tableName = "promo_rules")
 data class PromoRule(
@@ -68,10 +85,20 @@ data class PromoRule(
         return trimmed
     }
 
-    /** Title shown in the list and on receipts, e.g. "3 x Candy for $3.00". */
+    /** Units that make one pack of this deal. */
+    fun packSize(): Int = requiredQty
+
+    /** Snapshot retail of one pack, using prices stored on [items]. */
+    fun snapshotPackRetail(): Long = snapshotPackRetail(items.map { it.priceCents }, packSize().coerceAtLeast(requiredQty))
+
+    /** Title shown in the list and on receipts. */
     fun displayTitle(): String {
-        val dollars = java.lang.String.format(Locale.US, "$%.2f", bundlePriceCents / 100.0)
-        return "$requiredQty x ${groupDisplayName()} for $dollars"
+        val group = groupDisplayName()
+        return if (bundlePriceMode == BundlePriceMode.TRACK_SAVINGS && savingsCents > 0) {
+            "$requiredQty x $group, ${formatMoney(savingsCents)} off"
+        } else {
+            "$requiredQty x $group for ${formatMoney(bundlePriceCents)}"
+        }
     }
 
     /**
@@ -135,6 +162,9 @@ fun looksLikeFullPromoTitle(text: String): Boolean {
     if (Regex("""^\d+\s*x\s""", RegexOption.IGNORE_CASE).containsMatchIn(value)) return true
     return false
 }
+
+fun formatMoney(cents: Long): String =
+    java.lang.String.format(Locale.US, "$%.2f", cents / 100.0)
 
 /** Parses `H:mm` / `HH:mm` (and a bare hour) into minutes from midnight. `24:00` → 1440. */
 fun parseClockMinutes(text: String): Int? {

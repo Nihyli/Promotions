@@ -10,7 +10,12 @@ class PromoConverters {
     fun itemsToJson(items: List<PromoItemRef>): String {
         val array = JSONArray()
         for (item in items) {
-            array.put(JSONObject().put("id", item.id).put("name", item.name))
+            array.put(
+                JSONObject()
+                    .put("id", item.id)
+                    .put("name", item.name)
+                    .put("priceCents", item.priceCents),
+            )
         }
         return array.toString()
     }
@@ -24,7 +29,13 @@ class PromoConverters {
                 val obj = array.getJSONObject(i)
                 val id = obj.optString("id")
                 if (id.isNullOrBlank()) continue
-                add(PromoItemRef(id = id, name = obj.optString("name")))
+                add(
+                    PromoItemRef(
+                        id = id,
+                        name = obj.optString("name"),
+                        priceCents = obj.optLong("priceCents", 0L),
+                    ),
+                )
             }
         }
     }

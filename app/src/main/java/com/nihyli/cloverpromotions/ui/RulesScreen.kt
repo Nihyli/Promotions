@@ -52,10 +52,12 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.clover.sdk.v3.scanner.BarcodeResult
+import com.nihyli.cloverpromotions.data.BundlePriceMode
 import com.nihyli.cloverpromotions.data.PromoItemRef
 import com.nihyli.cloverpromotions.data.PromoRule
 import com.nihyli.cloverpromotions.data.formatClockMinutes24
 import com.nihyli.cloverpromotions.data.parseClockMinutes
+import com.nihyli.cloverpromotions.data.snapshotPackRetail
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -186,7 +188,7 @@ private fun RuleEditorDialog(
 ) {
     val selectedItems = remember {
         mutableStateListOf<PickerItem>().apply {
-            existing?.items?.forEach { add(PickerItem(it.id, it.name, 0L)) }
+            existing?.items?.forEach { add(PickerItem(it.id, it.name, it.priceCents)) }
         }
     }
     var labelText by remember { mutableStateOf(existing?.groupDisplayName().orEmpty()) }
@@ -202,7 +204,17 @@ private fun RuleEditorDialog(
     var maxUsesText by remember {
         mutableStateOf(existing?.maxUsesPerOrder?.takeIf { it > 0 }?.toString() ?: "")
     }
+    var trackSavings by remember {
+        mutableStateOf(
+            existing == null || existing.bundlePriceMode == BundlePriceMode.TRACK_SAVINGS,
+        )
+    }
     var showItemPicker by remember { mutableStateOf(false) }
+    var liveItems by remember { mutableStateOf<List<PickerItem>?>(null) }
+
+    LaunchedEffect(Unit) {
+        liveItems = viewModel.loadInventory()
+    }
 
     val qty = qtyText.toIntOrNull()
     val priceCents = dollarsToCents(priceText)
@@ -213,16 +225,23 @@ private fun RuleEditorDialog(
     } else {
         maxUsesText.toIntOrNull()?.takeIf { it >= 0 }
     }
+    val snap = qty?.let { snapshotPackRetail(selectedItems.map { item -> item.priceCents }, it) } ?: 0L
+    val savings = (snap - (priceCents ?: 0L)).coerceAtLeast(0L)
     val valid = selectedItems.isNotEmpty() &&
         effectiveLabel.isNotBlank() &&
         qty != null && qty >= 2 &&
         priceCents != null && priceCents > 0 &&
         daysMask and PromoRule.ALL_DAYS != 0 &&
         times != null &&
-        maxUses != null
+        maxUses != null &&
+        (!trackSavings || savings > 0L)
 
     val autoName = if (valid) {
-        "$qty x $effectiveLabel for ${centsToDollars(priceCents!!)}"
+        if (trackSavings && savings > 0L) {
+            "$qty x $effectiveLabel, ${centsToDollars(savings)} off"
+        } else {
+            "$qty x $effectiveLabel for ${centsToDollars(priceCents!!)}"
+        }
     } else {
         ""
     }
@@ -232,6 +251,11 @@ private fun RuleEditorDialog(
         other.active &&
             other.id != (existing?.id ?: 0L) &&
             other.items.any { it.id in selectedIds }
+    }
+
+    val liveById = liveItems.orEmpty().associateBy { it.id }
+    val pricesDrifted = existing != null && selectedItems.any { sel ->
+        liveById[sel.id]?.let { live -> live.priceCents != sel.priceCents } == true
     }
 
     AlertDialog(
@@ -288,6 +312,14 @@ private fun RuleEditorDialog(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Keep this $ off if prices change",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f).padding(end = 8.dp),
+                    )
+                    Switch(checked = trackSavings, onCheckedChange = { trackSavings = it })
+                }
                 OutlinedTextField(
                     value = maxUsesText,
                     onValueChange = { maxUsesText = it },
@@ -329,6 +361,37 @@ private fun RuleEditorDialog(
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
+                if (pricesDrifted) {
+                    val packQty = qty ?: 0
+                    val savedPrices = selectedItems.map { it.priceCents }
+                    val livePrices = selectedItems.map { sel -> liveById[sel.id]?.priceCents ?: sel.priceCents }
+                    val savedOff = estimatedPackSavings(
+                        trackSavings = trackSavings,
+                        storedSavingsCents = existing?.savingsCents ?: 0L,
+                        bundlePriceCents = priceCents ?: 0L,
+                        unitPrices = savedPrices,
+                        packQty = packQty,
+                    )
+                    val liveOff = estimatedPackSavings(
+                        trackSavings = trackSavings,
+                        storedSavingsCents = existing?.savingsCents ?: 0L,
+                        bundlePriceCents = priceCents ?: 0L,
+                        unitPrices = livePrices,
+                        packQty = packQty,
+                    )
+                    Text(
+                        "Inventory prices changed. This deal currently saves ${centsToDollars(liveOff)} on the cart vs ${centsToDollars(savedOff)} when saved.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    TextButton(onClick = {
+                        val updated = selectedItems.map { sel ->
+                            liveById[sel.id]?.let { live -> sel.copy(priceCents = live.priceCents, name = live.name) }
+                                ?: sel
+                        }
+                        selectedItems.clear()
+                        selectedItems.addAll(updated)
+                    }) { Text("Use current prices") }
+                }
                 if (overlap.isNotEmpty()) {
                     Text(
                         "Some of these items are already in ${overlap.joinToString { it.name }}. " +
@@ -349,7 +412,7 @@ private fun RuleEditorDialog(
                             id = existing?.id ?: 0,
                             name = autoName,
                             label = effectiveLabel,
-                            items = selectedItems.map { PromoItemRef(it.id, it.name) },
+                            items = selectedItems.map { PromoItemRef(it.id, it.name, it.priceCents) },
                             requiredQty = qty!!,
                             bundlePriceCents = priceCents!!,
                             active = existing?.active ?: true,
@@ -357,6 +420,12 @@ private fun RuleEditorDialog(
                             daysOfWeek = daysMask,
                             startMinute = window.first,
                             endMinute = window.second,
+                            bundlePriceMode = if (trackSavings) {
+                                BundlePriceMode.TRACK_SAVINGS
+                            } else {
+                                BundlePriceMode.FIXED_PRICE
+                            },
+                            savingsCents = if (trackSavings) savings else 0L,
                         ),
                     )
                 },
@@ -544,5 +613,22 @@ private fun editorTimes(startText: String, endText: String): Pair<Int, Int>? {
     if (start == end) return null
     return start to end
 }
+
+private fun estimatedPackSavings(
+    trackSavings: Boolean,
+    storedSavingsCents: Long,
+    bundlePriceCents: Long,
+    unitPrices: List<Long>,
+    packQty: Int,
+): Long {
+    val packRetail = snapshotPackRetail(unitPrices, packQty)
+    return if (trackSavings) {
+        val off = storedSavingsCents.takeIf { it > 0 } ?: (packRetail - bundlePriceCents).coerceAtLeast(0L)
+        if (packRetail <= off) 0L else off
+    } else {
+        (packRetail - bundlePriceCents).coerceAtLeast(0L)
+    }
+}
+
 
 
